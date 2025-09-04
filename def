@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+import sys
+import cloudscraper # Use cloudscraper for Vocabulary.com
+import requests     # Use standard requests for Reverso (likely doesn't need Cloudflare bypass)
+from bs4 import BeautifulSoup
+import textwrap     # For wrapping long definitions
+import re           # For highlighting words in examples
+# ... other imports ...
+import arabic_reshaper
+from bidi.algorithm import get_display
+import colorama
+colorama.init()
+# Rest of your imports and code...
+
+
+# --- Configuration ---
+# num of spaces before each line of print (styling purposes)
+SPACE = 2
+WRAP_WIDTH = 70 # Width for text wrapping
+
+# --- Helper Functions (from old script) ---
+
+def print_divider():
+    """Prints a standard divider line."""
+    print("-" * 30) # Adjusted divider length slightly
+
+def x_word_per_line(elements, x):
+    """Groups elements into lines with x elements per line."""
+    lines_list = []
+    if elements: # Ensure elements list is not empty
+        for i in range(0, len(elements), x):
+            lines_list.append(" ".join(elements[i:i+x]))
+    return lines_list
+
+def add_padding(text, space):
+    """Returns a string line with 'space' spaces added to the left."""
+    # No complex justification needed, just prefix with spaces
+    return " " * space + text
+
+def wrap_string(string, width):
+    """Wraps a string to a specified width."""
+    if string:
+        return textwrap.wrap(string, width=width)
+    return [] # Return empty list if string is None or empty
+
+def highlight_word(word, sentence_text):
+    """Highlights the exact word (case-insensitive) in a sentence using ANSI codes."""
+    if not sentence_text:
+        return ""
+    # Use re.escape to handle potential special characters in the word
+    # Use re.IGNORECASE for case-insensitive matching
+    # Use \b for word boundaries to avoid matching parts of words
+    try:
+        highlighted = re.sub(
+            rf"(\s*)({re.escape(word)})(\s*)",
+            r" \1\033[1m\033[91m\2\033[0m\3 ",
+            sentence_text,
+            flags=re.IGNORECASE
+        )
+        # highlighted = re.sub(
+        #     rf"\b({re.escape(word)})\b",
+        #     r"\033[1m\033[91m\1\033[0m",
+        #     sentence_text,
+        #     flags=re.IGNORECASE
+        # )
+
+        return highlighted
+    except re.error:
+        # Fallback if regex fails (e.g., invalid word pattern)
+        return sentence_text
+
+
+# --- Data Fetching and Parsing Function ---
+
+def get_word_data(word):
+    """
+    Fetches data from Vocabulary.com and Reverso Context,
+    using Cloudscraper for both to improve chances of success.
+
+    Args:
+        word (str): The word to look up.
+
+    Returns:
+        dict: A dictionary containing fetched data:
+              {'short_def': str|None, 'long_def': str|None,
+               'ar_words': list|None, 'eng_examples': list|None,
+               'error': str|None}
+              Returns None for parts that couldn't be fetched/parsed.
+              'error' key contains a message if a major failure occurred.
+        None: If a critical error prevents any data fetching.
+    """
+    results = {
+        'short_def': None,
+        'long_def': None,
+        'ar_words': None,
+        'eng_examples': None,
+        'error': None
+    }
+    error_messages = []
+
+    # --- Create ONE scraper instance for both requests ---
+    scraper = cloudscraper.create_scraper(
+        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
+        delay=10 # Add a small delay between requests if needed by cloudscraper's solver
+    )
+
+    # --- 1. Fetch from Vocabulary.com using Cloudscraper ---
+    vocab_url = f"https://www.vocabulary.com/dictionary/{word}"
+    response_vocab = None # Initialize to None
+    try:
+        print(f"Fetching from Vocabulary.com ({vocab_url})...")
+        response_vocab = scraper.get(vocab_url, timeout=25)
+        print(f"Vocabulary.com Status Code: {response_vocab.status_code}")
+        response_vocab.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+
+        soup_vocab = BeautifulSoup(response_vocab.content, 'html.parser')
+
+        short_def_tag = soup_vocab.find('p', class_='short')
+        long_def_tag = soup_vocab.find('p', class_='long')
+
+        results['short_def'] = " ".join(short_def_tag.stripped_strings) if short_def_tag else None
+        results['long_def'] = " ".join(long_def_tag.stripped_strings) if long_def_tag else None
+
+
+        if not results['short_def'] and not results['long_def']:
+            if "needs to review the security" in response_vocab.text:
+                 error_messages.append("Vocabulary.com: Cloudflare challenge page received, bypassing failed.")
+            elif soup_vocab.find('h3', string=lambda t: t and "No dictionary results" in t):
+                 error_messages.append(f"Vocabulary.com: '{word}' not found in the dictionary.")
+            else:
+                 error_messages.append(f"Vocabulary.com: Could not find definition elements for '{word}'.")
+
+    # Catch Cloudscraper/Requests specific errors first, then general exceptions
+    except cloudscraper.exceptions.CloudflareChallengeError as e:
+        error_messages.append(f"Vocabulary.com: Cloudscraper failed Cloudflare challenge: {e}")
+    except requests.exceptions.RequestException as e: # cloudscraper uses requests exceptions too
+        error_messages.append(f"Vocabulary.com: Network/Request error: {e}")
+    except Exception as e:
+        error_messages.append(f"Vocabulary.com: An unexpected error occurred: {e}")
+        # Optional debug saving
+        # try:
+        #     if response_vocab:
+        #         with open(f"vocab_error_{word}.html", "w", encoding="utf-8") as f:
+        #             f.write(response_vocab.text)
+        # except: pass
+
+
+    # --- 2. Fetch from Reverso Context using Cloudscraper ---
+    reverso_url = f"https://context.reverso.net/translation/english-arabic/{word}"
+    response_reverso = None # Initialize to None
+    try:
+        print(f"Fetching from Reverso Context ({reverso_url})...")
+        # *** Use the SAME scraper instance ***
+        response_reverso = scraper.get(reverso_url, timeout=25) # Increased timeout slightly
+        print(f"Reverso Context Status Code: {response_reverso.status_code}")
+        response_reverso.raise_for_status() # Will raise for 403 if cloudscraper doesn't bypass it
+
+        soup_reverso = BeautifulSoup(response_reverso.content, "html.parser")
+
+        ar_words_tags = soup_reverso.select("span.display-term")
+        eng_sents_tags = soup_reverso.select("div.example div.ltr span.text")
+
+        results['ar_words'] = [el.get_text(strip=True) for el in ar_words_tags if el.get_text(strip=True)]
+        results['eng_examples'] = [el.get_text(strip=True) for el in eng_sents_tags if el.get_text(strip=True)]
+
+        if not results['ar_words'] and not results['eng_examples']:
+             if soup_reverso.find(string=re.compile("no results found", re.IGNORECASE)):
+                 error_messages.append(f"Reverso Context: '{word}' not found.")
+             # Check specifically if we got blocked despite cloudscraper
+             elif response_reverso.status_code == 403:
+                  error_messages.append(f"Reverso Context: Still received 403 Forbidden even with Cloudscraper.")
+             else:
+                error_messages.append(f"Reverso Context: Could not find translation or example elements for '{word}'.")
+
+    # Catch Cloudscraper/Requests specific errors first, then general exceptions
+    except cloudscraper.exceptions.CloudflareChallengeError as e:
+         # Less likely for Reverso, but possible they use Cloudflare too
+        error_messages.append(f"Reverso Context: Cloudscraper failed challenge: {e}")
+    except requests.exceptions.RequestException as e: # Covers 403, network errors etc. if not bypassed
+        error_messages.append(f"Reverso Context: Network/Request error: {e}")
+    except Exception as e:
+        error_messages.append(f"Reverso Context: An unexpected error occurred: {e}")
+        # Optional debug saving
+        # try:
+        #     if response_reverso:
+        #         with open(f"reverso_error_{word}.html", "w", encoding="utf-8") as f:
+        #             f.write(response_reverso.text)
+        # except: pass
+
+
+    # Combine errors if any occurred
+    if error_messages:
+        results['error'] = "\n".join(error_messages)
+
+    # Return None only if absolutely no useful data was retrieved from EITHER source
+    if not results['short_def'] and not results['long_def'] and not results['ar_words'] and not results['eng_examples'] and results['error']:
+         print("\nCritical error: Could not retrieve data from any source.")
+         print(results['error'])
+         return None
+
+    return results
+
+
+# --- Main Execution Block ---
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        print(f"Usage: python {sys.argv[0]} <word>")
+        sys.exit(1)
+
+    search_word = sys.argv[1]
+    print(f"\nLooking up '{search_word}'...")
+    print("=" * 30) # Main separator
+
+    data = get_word_data(search_word)
+
+    if data is None:
+        sys.exit(1)
+
+    # --- Print results section by section ---
+
+    # 1. Arabic Words (with reshaping and bidi)
+    if data['ar_words']:
+        print_divider()
+        ar_lines = x_word_per_line(data['ar_words'], 5) # Group words into lines first
+        for line in ar_lines:
+            # --- Apply Arabic reshaping and bidi ---
+            reshaped_text = arabic_reshaper.reshape(line)
+            bidi_text = get_display(reshaped_text)
+            # --- Print the processed line ---
+            print(add_padding(bidi_text, SPACE))
+    else:
+        print_divider()
+        print(add_padding("No Arabic translations found.", SPACE))
+
+
+    # 2. Short Definition
+    if data['short_def']:
+        print_divider()
+        short_def_lines = wrap_string(data['short_def'], WRAP_WIDTH)
+        for line in short_def_lines:
+            print(add_padding(line, SPACE))
+    else:
+        print_divider()
+        print(add_padding("No short definition found.", SPACE))
+
+
+    # 3. Long Definition
+    if data['long_def']:
+        print_divider()
+        long_def_lines = wrap_string(data['long_def'], WRAP_WIDTH)
+        for line in long_def_lines:
+            print(add_padding(line, SPACE))
+    else:
+        print_divider()
+        print(add_padding("No long definition found.", SPACE))
+
+
+   # 4. English Examples
+    if data['eng_examples']:
+        print_divider()
+        for sentence in data['eng_examples']:
+            # --- Step 1: Wrap the ORIGINAL sentence first ---
+            original_lines = wrap_string(sentence, WRAP_WIDTH)
+
+            # --- Step 2: Iterate through the wrapped lines ---
+            for line in original_lines:
+                # --- Step 3: Highlight THIS line ---
+                highlighted_line = highlight_word(search_word, line)
+
+                # --- Step 4: Print with simple padding ---
+                print(add_padding(highlighted_line, SPACE))
+
+            print() # Add a small gap between examples (outside the inner loop)
+    else:
+        print_divider()
+        print(add_padding("No English examples found.", SPACE))
+
+    # Print final divider
+    print_divider()
+
+    # Print any non-critical errors encountered during fetching
+    if data['error'] and (data['short_def'] or data['long_def'] or data['ar_words'] or data['eng_examples']):
+        print("\nNotes / Errors during fetch:")
+        print(data['error'])
+        print("-" * 30)
