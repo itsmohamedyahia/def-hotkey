@@ -528,31 +528,6 @@ class WordLookupApp:
         self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.result_text_widget.insert(tk.INSERT, content)
 
-        # # Highlighting logic
-        # if search_word:
-        #     try:
-        #         default_font = tkfont.nametofont("TkDefaultFont")
-        #         bold_font = default_font.copy()
-        #         bold_font.configure(weight="bold")
-        #         self.result_text_widget.tag_configure("highlight", font=bold_font)
-        #     except Exception:
-        #         try:
-        #             df = tkfont.nametofont("TkDefaultFont").actual()
-        #             bold_font_tuple = (df['family'], df['size'], 'bold')
-        #             self.result_text_widget.tag_configure("highlight", font=bold_font_tuple)
-        #         except Exception:
-        #             pass
-
-        #     pos = '1.0'
-        #     pattern = fr'\y{re.escape(search_word)}\y'
-        #     while True:
-        #         start_idx = self.result_text_widget.search(pattern, pos, stopindex=tk.END, nocase=1, regexp=True)
-        #         if not start_idx:
-        #             break
-        #         end_idx = f"{start_idx}+{len(search_word)}c"
-        #         self.result_text_widget.tag_add("highlight", start_idx, end_idx)
-        #         pos = end_idx
-
         self.result_text_widget.config(state=tk.DISABLED)
 
         # Bind Esc to close results window
