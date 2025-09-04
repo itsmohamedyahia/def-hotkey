@@ -1,0 +1,8 @@
+pynput
+cloudscraper
+beautifulsoup4
+arabic-reshaper
+python-bidi
+pystray
+pillow
+pyinstaller

@@ -1,25 +1,30 @@
 # word_lookup_app.py
+"""
+Word Lookup App — show input window with Ctrl+Alt+W.
+When Enter is pressed: input window disappears immediately.
+If lookup succeeds -> show results window.
+If lookup fails -> show an error dialog.
+"""
 import sys
 import threading
 import tkinter as tk
-from tkinter import scrolledtext, Toplevel, Entry, Label
+from tkinter import scrolledtext, Toplevel, Entry, Label, messagebox
 from pynput import keyboard
-
-# --- Your Original Imports (Keep them all) ---
 import cloudscraper
-import requests
 from bs4 import BeautifulSoup
 import textwrap
 import re
 import arabic_reshaper
 from bidi.algorithm import get_display
+import pystray
+from PIL import Image, ImageDraw, ImageFont
+import time
 
-# --- Configuration (from your script) ---
+# --- Configuration ---
 SPACE = 2
 WRAP_WIDTH = 70
 
-# --- Helper Functions (from your script, slightly modified for GUI) ---
-
+# --- Helper functions ---
 def x_word_per_line(elements, x):
     lines_list = []
     if elements:
@@ -36,7 +41,6 @@ def wrap_string(string, width):
     return []
 
 def highlight_word_for_gui(word, sentence_text):
-    """Highlights the word by surrounding it with asterisks for the GUI."""
     if not sentence_text:
         return ""
     try:
@@ -50,13 +54,8 @@ def highlight_word_for_gui(word, sentence_text):
     except re.error:
         return sentence_text
 
-# --- Data Fetching Function (Your original function, unchanged) ---
-
+# --- Data fetcher ---
 def get_word_data(word):
-    """
-    Fetches data from Vocabulary.com and Reverso Context.
-    (This is your original function, no changes needed here)
-    """
     results = {
         'short_def': None,
         'long_def': None,
@@ -65,14 +64,18 @@ def get_word_data(word):
         'error': None
     }
     error_messages = []
-    scraper = cloudscraper.create_scraper(
-        browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
-        delay=10
-    )
-
-    # Fetch from Vocabulary.com
-    vocab_url = f"https://www.vocabulary.com/dictionary/{word}"
     try:
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
+            delay=10
+        )
+    except Exception as e:
+        # return an explicit error dict (choose to treat as failure by caller)
+        return {'error': f'cloudscraper init error: {e}'}
+
+    # Vocabulary.com
+    try:
+        vocab_url = f"https://www.vocabulary.com/dictionary/{word}"
         response_vocab = scraper.get(vocab_url, timeout=25)
         response_vocab.raise_for_status()
         soup_vocab = BeautifulSoup(response_vocab.content, 'html.parser')
@@ -85,9 +88,9 @@ def get_word_data(word):
     except Exception as e:
         error_messages.append(f"Vocabulary.com Error: {e}")
 
-    # Fetch from Reverso Context
-    reverso_url = f"https://context.reverso.net/translation/english-arabic/{word}"
+    # Reverso Context
     try:
+        reverso_url = f"https://context.reverso.net/translation/english-arabic/{word}"
         response_reverso = scraper.get(reverso_url, timeout=25)
         response_reverso.raise_for_status()
         soup_reverso = BeautifulSoup(response_reverso.content, "html.parser")
@@ -103,23 +106,21 @@ def get_word_data(word):
     if error_messages:
         results['error'] = "\n".join(error_messages)
 
-    # Check if any data was retrieved at all
+    # If no useful data at all, return None to indicate lookup produced nothing useful
     if not any(v for k, v in results.items() if k != 'error' and v):
-        return None  # Return None if no useful data found
+        return None
 
     return results
 
-# --- NEW: Function to format results for the GUI window ---
-
+# --- Formatter ---
 def format_data_for_display(search_word, data):
-    """Takes the data dictionary and formats it into a single string for display."""
     if data is None:
         return f"Could not find any results for '{search_word}'."
 
     output_lines = []
     divider = "-" * 50
 
-    # 1. Arabic Words
+    # Arabic words
     output_lines.append(divider)
     if data.get('ar_words'):
         ar_lines = x_word_per_line(data['ar_words'], 5)
@@ -130,7 +131,7 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No Arabic translations found.", SPACE))
 
-    # 2. Short Definition
+    # Short def
     output_lines.append(divider)
     if data.get('short_def'):
         short_def_lines = wrap_string(data['short_def'], WRAP_WIDTH)
@@ -139,7 +140,7 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No short definition found.", SPACE))
 
-    # 3. Long Definition
+    # Long def
     output_lines.append(divider)
     if data.get('long_def'):
         long_def_lines = wrap_string(data['long_def'], WRAP_WIDTH)
@@ -148,7 +149,7 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No long definition found.", SPACE))
 
-    # 4. English Examples
+    # Examples
     output_lines.append(divider)
     if data.get('eng_examples'):
         for sentence in data['eng_examples']:
@@ -162,29 +163,26 @@ def format_data_for_display(search_word, data):
 
     output_lines.append(divider)
 
-    # Add any errors to the end
     if data.get('error'):
         output_lines.append("\nNotes / Errors:")
         output_lines.append(data['error'])
 
     return "\n".join(output_lines)
 
-# --- NEW: Main Application Class ---
-
+# --- App class ---
 class WordLookupApp:
     def __init__(self, root):
         self.root = root
-        self.root.withdraw()  # Hide the main window
+        self.root.withdraw()
         self.input_window = None
         self.result_window = None
         self.result_text_widget = None
         self.hotkey_listener = None
+        self.tray_icon = None
 
-        # When closing main window, ensure listener stops
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def show_input_window(self):
-        # If a window is already open, bring it to the front
         if self.input_window and self.input_window.winfo_exists():
             self.input_window.lift()
             self.input_window.focus_force()
@@ -192,13 +190,8 @@ class WordLookupApp:
 
         self.input_window = Toplevel(self.root)
         self.input_window.title("Look Up Word")
-        # Keep it on top initially
         self.input_window.attributes("-topmost", True)
 
-        # Remove window decorations? (optional)
-        # self.input_window.overrideredirect(True)
-
-        # Center the window
         window_width = 320
         window_height = 90
         screen_width = self.input_window.winfo_screenwidth()
@@ -211,22 +204,19 @@ class WordLookupApp:
 
         self.entry = Entry(self.input_window, width=40)
         self.entry.pack(pady=5, padx=10)
-        # Ensure the entry receives focus and input
         self.input_window.lift()
         self.input_window.focus_force()
         self.entry.focus_set()
         try:
-            # Try to grab focus so typing goes to this Toplevel
             self.input_window.grab_set()
         except Exception:
             pass
 
-        # Bind Enter key to the lookup function
+        # Bind Enter to start_lookup and Escape to close
         self.entry.bind("<Return>", self.start_lookup)
-        # Bind Escape key to close the window
         self.input_window.bind("<Escape>", lambda e: self.close_input_window())
 
-        # Once shown, remove permanent topmost (optional), keep it visible but not forced above all windows later
+        # Remove topmost after a short time so it doesn't permanently stay above all windows
         self.input_window.after(200, lambda: self.input_window.attributes("-topmost", False))
 
     def close_input_window(self):
@@ -241,23 +231,35 @@ class WordLookupApp:
             pass
 
     def start_lookup(self, event=None):
+        # Called from GUI thread when user presses Enter.
         word = self.entry.get().strip()
-        if word:
-            # Close input window and show a temporary results window
-            self.close_input_window()
-            self.display_results(f"Looking up '{word}'...", f"Results for '{word}'")
+        if not word:
+            # do nothing if empty
+            return
+        # Close the input window immediately (user requested this)
+        self.close_input_window()
 
-            # Run the data fetching in a separate thread to not freeze the GUI
-            lookup_thread = threading.Thread(target=self.run_lookup_and_update_gui, args=(word,), daemon=True)
-            lookup_thread.start()
+        # Start background thread to fetch data; do NOT create a results window yet.
+        lookup_thread = threading.Thread(target=self.run_lookup_and_update_gui, args=(word,), daemon=True)
+        lookup_thread.start()
 
     def run_lookup_and_update_gui(self, word):
-        # This runs in a background thread
-        data = get_word_data(word)
-        formatted_results = format_data_for_display(word, data)
+        # This runs in a background thread. Catch exceptions and report back to main thread.
+        try:
+            data = get_word_data(word)
+        except Exception as e:
+            # unexpected exception — schedule error dialog on main thread
+            self.root.after(0, lambda: messagebox.showerror("Lookup error", f"An error occurred: {e}"))
+            return
 
-        # Schedule the GUI update to run in the main thread
-        self.root.after(0, self.update_result_window, formatted_results, word)
+        # If get_word_data returns None => treat as failure
+        if data is None:
+            self.root.after(0, lambda: messagebox.showinfo("No results", f"No results found for '{word}'."))
+            return
+
+        # Otherwise format and show results window on main thread
+        formatted_results = format_data_for_display(word, data)
+        self.root.after(0, lambda: self.display_results(formatted_results, f"Results for '{word}'"))
 
     def display_results(self, content, title="Results"):
         if self.result_window and self.result_window.winfo_exists():
@@ -265,92 +267,132 @@ class WordLookupApp:
 
         self.result_window = Toplevel(self.root)
         self.result_window.title(title)
-        # Make sure result window is on top when first created
         self.result_window.attributes("-topmost", True)
-        # Add a ScrolledText and keep a reference
+
         self.result_text_widget = scrolledtext.ScrolledText(self.result_window, wrap=tk.WORD, width=80, height=25)
         self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.result_text_widget.insert(tk.INSERT, content)
         self.result_text_widget.config(state=tk.DISABLED)
 
-        # allow the window to be focused and then return topmost to normal
         self.result_window.lift()
         self.result_window.focus_force()
         self.result_window.after(200, lambda: self.result_window.attributes("-topmost", False))
 
-    def update_result_window(self, content, word):
-        if self.result_window and self.result_window.winfo_exists() and self.result_text_widget:
-            self.result_window.title(f"Results for '{word}'")
+    def create_tray_icon(self):
+        # small icon (letter W)
+        try:
+            img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
+            d = ImageDraw.Draw(img)
+            d.ellipse((0, 0, 64, 64), fill=(30, 144, 255, 255))
             try:
-                self.result_text_widget.config(state=tk.NORMAL)
-                self.result_text_widget.delete('1.0', tk.END)
-                self.result_text_widget.insert('1.0', content)
-                self.result_text_widget.config(state=tk.DISABLED)
-                self.result_window.lift()
-                self.result_window.focus_force()
+                f = ImageFont.truetype("arial.ttf", 36)
+            except Exception:
+                f = ImageFont.load_default()
+            w_text = "W"
+            tw, th = d.textsize(w_text, font=f)
+            d.text(((64 - tw) / 2, (64 - th) / 2 - 2), w_text, font=f, fill=(255, 255, 255, 255))
+        except Exception:
+            img = Image.new('RGB', (64, 64), color=(30, 144, 255))
+
+        # Use callables that schedule tkinter operations on main thread
+        menu = pystray.Menu(
+            pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window)),
+            pystray.MenuItem('Exit', lambda: self.root.after(0, self.on_tray_exit()))
+        )
+        icon = pystray.Icon("word_lookup", img, "Word Lookup", menu)
+        self.tray_icon = icon
+
+        def run_icon():
+            try:
+                icon.run()
             except Exception:
                 pass
-        else:
-            # If result window doesn't exist (rare), create it
-            self.display_results(content, f"Results for '{word}'")
+
+        t = threading.Thread(target=run_icon, daemon=True)
+        t.start()
+
+    def on_tray_exit(self):
+        def _exit():
+            try:
+                if self.tray_icon:
+                    try:
+                        self.tray_icon.stop()
+                    except Exception:
+                        pass
+                if self.hotkey_listener:
+                    try:
+                        self.hotkey_listener.stop()
+                    except Exception:
+                        pass
+                self.root.quit()
+            except Exception:
+                try:
+                    self.root.destroy()
+                except Exception:
+                    pass
+        return _exit
 
     def on_close(self):
-        # Stop hotkey listener if running and then destroy root
         try:
+            if self.tray_icon:
+                try:
+                    self.tray_icon.stop()
+                except Exception:
+                    pass
             if self.hotkey_listener:
                 try:
                     self.hotkey_listener.stop()
                 except Exception:
                     pass
-            self.root.destroy()
-        except Exception:
+        finally:
             try:
-                self.root.quit()
+                self.root.destroy()
             except Exception:
                 pass
 
-
-# --- Hotkey Setup using GlobalHotKeys (more reliable) ---
+# --- Hotkey ---
 def start_app_hotkey():
-    # Schedule the GUI call safely on the main thread
     try:
         app.root.after(0, app.show_input_window)
     except Exception:
         pass
 
 def create_and_start_hotkey_listener():
-    # Map the hotkey to the callback. Format: '<ctrl>+<alt>+w'
-    hotkeys = { '<ctrl>+<alt>+w': start_app_hotkey }
-
+    hotkeys = {'<ctrl>+<alt>+w': start_app_hotkey}
     listener = keyboard.GlobalHotKeys(hotkeys)
-    # Keep a reference on the app instance for shutdown
     app.hotkey_listener = listener
-
-    listener.start()  # starts listener in its own thread
-    # join() is not called here so the current thread continues (we start this function in a daemon thread)
+    listener.start()
     try:
         listener.join()
     except Exception:
-        # join will block until listener stops; if the main program exits, this may raise
         pass
 
-# --- Main Execution ---
-if __name__ == "__main__":
-    main_root = tk.Tk()
-    app = WordLookupApp(main_root)
+# --- Main ---
+if __name__ == '__main__':
+    root = tk.Tk()
+    app = WordLookupApp(root)
 
-    # Start the hotkey listener in a background daemon thread so it won't prevent exit
+    # hotkey listener
     hk_thread = threading.Thread(target=create_and_start_hotkey_listener, daemon=True)
     hk_thread.start()
 
-    # Start the Tkinter main loop
+    # tray icon (optional)
     try:
-        main_root.mainloop()
+        app.create_tray_icon()
+    except Exception:
+        pass
+
+    try:
+        root.mainloop()
     finally:
-        # make sure the hotkey listener is stopped on exit
         try:
             if app.hotkey_listener:
                 app.hotkey_listener.stop()
+        except Exception:
+            pass
+        try:
+            if app.tray_icon:
+                app.tray_icon.stop()
         except Exception:
             pass
         sys.exit(0)
