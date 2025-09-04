@@ -19,6 +19,9 @@ from bidi.algorithm import get_display
 import pystray
 from PIL import Image, ImageDraw, ImageFont
 import time
+import requests
+import socket
+
 
 # --- Configuration ---
 SPACE = 2
@@ -56,6 +59,12 @@ def highlight_word_for_gui(word, sentence_text):
 
 # --- Data fetcher ---
 def get_word_data(word):
+    """
+    Returns:
+      - dict with data (same shape as before) on success,
+      - None if lookup completed successfully but no useful data found (word not found),
+      - dict with {'network_error': True, 'error': '...'} if there was a network/connectivity problem.
+    """
     results = {
         'short_def': None,
         'long_def': None,
@@ -64,14 +73,21 @@ def get_word_data(word):
         'error': None
     }
     error_messages = []
+
+    # Try to create scraper; treat failure here as a network/initialization problem
     try:
         scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
             delay=10
         )
     except Exception as e:
-        # return an explicit error dict (choose to treat as failure by caller)
-        return {'error': f'cloudscraper init error: {e}'}
+        return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
+
+    # Helper to treat requests-related exceptions as network errors
+    def treat_request_as_network(exc):
+        # requests raises requests.exceptions.RequestException for many network issues.
+        # Also treat socket.gaierror / OSError as network problems.
+        return isinstance(exc, requests.exceptions.RequestException) or isinstance(exc, socket.gaierror) or isinstance(exc, OSError)
 
     # Vocabulary.com
     try:
@@ -86,6 +102,9 @@ def get_word_data(word):
         if not results['short_def'] and not results['long_def']:
             error_messages.append(f"Vocabulary.com: Could not find definitions for '{word}'.")
     except Exception as e:
+        # If this looks like a network error, return network sentinel immediately.
+        if treat_request_as_network(e):
+            return {'network_error': True, 'error': f'Vocabulary.com request failed: {e}'}
         error_messages.append(f"Vocabulary.com Error: {e}")
 
     # Reverso Context
@@ -101,6 +120,8 @@ def get_word_data(word):
         if not results['ar_words'] and not results['eng_examples']:
             error_messages.append(f"Reverso Context: Could not find translations or examples for '{word}'.")
     except Exception as e:
+        if treat_request_as_network(e):
+            return {'network_error': True, 'error': f'Reverso Context request failed: {e}'}
         error_messages.append(f"Reverso Context Error: {e}")
 
     if error_messages:
@@ -249,10 +270,17 @@ class WordLookupApp:
             data = get_word_data(word)
         except Exception as e:
             # unexpected exception — schedule error dialog on main thread
-            self.root.after(0, lambda: messagebox.showerror("Lookup error", f"An error occurred: {e}"))
+            self.root.after(0, lambda: messagebox.showerror("Lookup error", f"An unexpected error occurred: {e}"))
             return
 
-        # If get_word_data returns None => treat as failure
+        # Handle explicit network error sentinel from get_word_data
+        if isinstance(data, dict) and data.get('network_error'):
+            err_detail = data.get('error', 'Network error')
+            self.root.after(0, lambda: messagebox.showerror("Network error",
+                                                            f"Could not reach the lookup services.\nPlease check your internet connection.\n\nDetails: {err_detail}"))
+            return
+
+        # If get_word_data returns None => word not found (no useful data)
         if data is None:
             self.root.after(0, lambda: messagebox.showinfo("No results", f"No results found for '{word}'."))
             return
@@ -261,44 +289,114 @@ class WordLookupApp:
         formatted_results = format_data_for_display(word, data)
         self.root.after(0, lambda: self.display_results(formatted_results, f"Results for '{word}'"))
 
+    def close_result_window(self, event=None):
+        """Close the results window (safe to call even if it doesn't exist)."""
+        try:
+            if self.result_window and self.result_window.winfo_exists():
+                self.result_window.destroy()
+                self.result_window = None
+                self.result_text_widget = None
+        except Exception:
+            pass
+
     def display_results(self, content, title="Results"):
+        """Create a centered results window and bind Esc to close it."""
+        # Destroy previous results window if present
         if self.result_window and self.result_window.winfo_exists():
-            self.result_window.destroy()
+            try:
+                self.result_window.destroy()
+            except Exception:
+                pass
 
         self.result_window = Toplevel(self.root)
         self.result_window.title(title)
         self.result_window.attributes("-topmost", True)
 
-        self.result_text_widget = scrolledtext.ScrolledText(self.result_window, wrap=tk.WORD, width=80, height=25)
+        # ScrolledText widget
+        self.result_text_widget = scrolledtext.ScrolledText(
+            self.result_window, wrap=tk.WORD, width=80, height=25
+        )
         self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.result_text_widget.insert(tk.INSERT, content)
         self.result_text_widget.config(state=tk.DISABLED)
 
+        # Bind Esc to close results window
+        # bind to the Toplevel so pressing Esc anywhere in the window will close it
+        self.result_window.bind("<Escape>", lambda e: self.close_result_window())
+
+        # Force layout so window has actual pixel size, then center it
+        self.result_window.update_idletasks()
+        win_w = self.result_window.winfo_width()
+        win_h = self.result_window.winfo_height()
+        screen_w = self.result_window.winfo_screenwidth()
+        screen_h = self.result_window.winfo_screenheight()
+        x = (screen_w // 2) - (win_w // 2)
+        y = (screen_h // 2) - (win_h // 2)
+        self.result_window.geometry(f"+{x}+{y}")
+
+        # Focus and remove topmost shortly after
         self.result_window.lift()
         self.result_window.focus_force()
         self.result_window.after(200, lambda: self.result_window.attributes("-topmost", False))
 
+    def update_result_window(self, content, word):
+        """Update the existing results window's content and re-center it."""
+        if self.result_window and self.result_window.winfo_exists() and self.result_text_widget:
+            try:
+                self.result_window.title(f"Results for '{word}'")
+                self.result_text_widget.config(state=tk.NORMAL)
+                self.result_text_widget.delete('1.0', tk.END)
+                self.result_text_widget.insert('1.0', content)
+                self.result_text_widget.config(state=tk.DISABLED)
+
+                # Re-center the window after the content change (in case size changed)
+                self.result_window.update_idletasks()
+                win_w = self.result_window.winfo_width()
+                win_h = self.result_window.winfo_height()
+                screen_w = self.result_window.winfo_screenwidth()
+                screen_h = self.result_window.winfo_screenheight()
+                x = (screen_w // 2) - (win_w // 2)
+                y = (screen_h // 2) - (win_h // 2)
+                self.result_window.geometry(f"+{x}+{y}")
+
+                self.result_window.lift()
+                self.result_window.focus_force()
+            except Exception:
+                pass
+        else:
+            # If no result window exists, create one
+            self.display_results(content, f"Results for '{word}'")
+
     def create_tray_icon(self):
-        # small icon (letter W)
         try:
+            # Create a transparent image
             img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
             d = ImageDraw.Draw(img)
+
+            # Draw blue circle background
             d.ellipse((0, 0, 64, 64), fill=(30, 144, 255, 255))
+
+            # Always use a font (try truetype first, fallback to default)
             try:
-                f = ImageFont.truetype("arial.ttf", 36)
+                f = ImageFont.truetype("arial.ttf", 32)
             except Exception:
                 f = ImageFont.load_default()
+
+            # Draw white "W" in the center
             w_text = "W"
             tw, th = d.textsize(w_text, font=f)
-            d.text(((64 - tw) / 2, (64 - th) / 2 - 2), w_text, font=f, fill=(255, 255, 255, 255))
+            d.text(((64 - tw) / 2, (64 - th) / 2), w_text, font=f, fill=(255, 255, 255, 255))
+
         except Exception:
+            # If anything fails, fallback to plain blue square
             img = Image.new('RGB', (64, 64), color=(30, 144, 255))
 
-        # Use callables that schedule tkinter operations on main thread
+        # Menu items
         menu = pystray.Menu(
             pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window)),
             pystray.MenuItem('Exit', lambda: self.root.after(0, self.on_tray_exit()))
         )
+
         icon = pystray.Icon("word_lookup", img, "Word Lookup", menu)
         self.tray_icon = icon
 
