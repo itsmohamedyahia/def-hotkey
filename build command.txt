@@ -1,0 +1,1 @@
+pyinstaller --onefile --windowed --name def --icon=app.ico --add-data="app.png:." def.py
