@@ -1,4 +1,3 @@
-# word_lookup_app_def.py
 """
 Word Lookup App — show input window with Ctrl+Alt+W.
 When Enter is pressed: input window disappears immediately.
@@ -100,7 +99,7 @@ def add_to_startup_linux(command):
 [Desktop Entry]
 Type=Application
 Name={APP_NAME}
-Comment=Look up words with Ctrl+Alt+W
+Comment=Look up words with a custom shortcut
 Exec={command}
 Terminal=false
 """
@@ -164,23 +163,30 @@ def get_config_path():
 def setup_auto_start():
     """
     Checks if this is the first run. If it is, silently adds the app
-    to startup and creates a flag file to prevent it from running again.
+    to startup and updates the config file.
     """
-    config_file = get_config_path()
+    config_path = get_config_path()
+    config = {}
+    # Read existing config to avoid overwriting it
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            pass  # Will create a new file below if reading fails
 
-    if not os.path.exists(config_file):
-        # This is the first run.
-        print(f"First run detected. Adding {APP_NAME} to startup...")
+    if not config.get("startup_configured"):
+        print(f"First run detected for startup. Adding {APP_NAME} to startup...")
         try:
             add_to_startup()
-            # Create the config file to prevent this from running again.
-            with open(config_file, 'w') as f:
-                json.dump({"startup_configured": True}, f)
+            config["startup_configured"] = True
+            # Write the updated config back
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
             print("Successfully configured application for auto-start.")
         except Exception as e:
-            # We print the error for debugging, but don't show a GUI error
-            # to the user, as this is intended to be a silent process.
             print(f"Error: Could not add application to startup: {e}")
+
 
 # --- Configuration ---
 SPACE = 2
@@ -344,7 +350,6 @@ def format_data_for_display(search_word, data):
 class WordLookupApp:
     def __init__(self, root):
         self.root = root
-        # set the (hidden) root title to APP_NAME
         try:
             self.root.title(APP_NAME)
         except Exception:
@@ -353,10 +358,45 @@ class WordLookupApp:
         self.input_window = None
         self.result_window = None
         self.result_text_widget = None
-        self.hotkey_listener = None
         self.tray_icon = None
 
+        # --- New Hotkey & Config Management ---
+        self.config_path = get_config_path()
+        self.config = {}
+        self.default_hotkey = '<ctrl>+<alt>+w'
+        self.hotkey = self.default_hotkey
+        self.load_config()  # Load saved hotkey on startup
+
+        self.hotkey_listener = None
+        self.hotkey_thread = None
+        # --- End New ---
+
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def load_config(self):
+        try:
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r') as f:
+                    self.config = json.load(f)
+                self.hotkey = self.config.get('hotkey', self.default_hotkey)
+                print(f"Loaded config. Hotkey is: {self.hotkey}")
+            else:
+                print("No config file found. Using default hotkey.")
+                self.config = {'hotkey': self.default_hotkey}
+                self.save_config()  # Save the default on first run
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"Error loading config file: {e}. Using default settings.")
+            self.hotkey = self.default_hotkey
+            self.config = {'hotkey': self.hotkey}
+
+    def save_config(self):
+        try:
+            self.config['hotkey'] = self.hotkey
+            with open(self.config_path, 'w') as f:
+                json.dump(self.config, f, indent=4)
+            print(f"Config saved. Hotkey is now: {self.hotkey}")
+        except IOError as e:
+            print(f"Error saving config file: {e}")
 
     def show_input_window(self):
         if self.input_window and self.input_window.winfo_exists():
@@ -366,17 +406,13 @@ class WordLookupApp:
             return
 
         self.input_window = Toplevel(self.root)
-        # include APP_NAME in the window title
         self.input_window.title(f"{APP_NAME}")
 
-        # More aggressive first-time setup
         if not hasattr(self, '_first_window_shown'):
-            # Make the main root window visible momentarily to "activate" the app
             self.root.deiconify()
             self.root.withdraw()
             self._first_window_shown = True
 
-        # Set attributes before geometry
         self.input_window.attributes("-topmost", True)
 
         window_width = 320
@@ -388,57 +424,13 @@ class WordLookupApp:
         self.input_window.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
 
         Label(self.input_window, text="Enter word to look up:").pack(pady=5)
-
         self.entry = Entry(self.input_window, width=40)
         self.entry.pack(pady=5, padx=10)
-
-        # Immediate focus attempt
         self.input_window.lift()
         self.input_window.focus_force()
         self.entry.focus_set()
 
-        # Multiple delayed attempts
-        def focus_attempt_1():
-            try:
-                # Flash the taskbar to get Windows attention, then focus
-                if hasattr(self, '_first_window_shown') and not hasattr(self, '_focus_attempts_done'):
-                    # Brief flash to activate
-                    self.input_window.attributes("-topmost", False)
-                    self.input_window.iconify()
-                    self.input_window.deiconify()
-                    self.input_window.attributes("-topmost", True)
-
-                self.input_window.lift()
-                self.input_window.focus_force()
-                self.entry.focus_set()
-            except Exception:
-                pass
-
-        def focus_attempt_2():
-            try:
-                self.input_window.focus_force()
-                self.entry.focus_set()
-                self.input_window.lift()
-                # Remove topmost after successful focus
-                self.input_window.attributes("-topmost", False)
-            except Exception:
-                pass
-
-        def final_focus():
-            try:
-                # Final aggressive attempt
-                self.input_window.focus_force()
-                self.entry.focus_set()
-                if hasattr(self, '_first_window_shown'):
-                    self._focus_attempts_done = True
-            except Exception:
-                pass
-
-        # Schedule multiple focus attempts
-        self.input_window.after(50, focus_attempt_1)
-        self.input_window.after(150, focus_attempt_2)
-        self.input_window.after(300, final_focus)
-
+        self.input_window.after(50, self.entry.focus_force)
         try:
             self.input_window.grab_set()
         except Exception:
@@ -459,47 +451,34 @@ class WordLookupApp:
             pass
 
     def start_lookup(self, event=None):
-        # Called from GUI thread when user presses Enter.
         word = self.entry.get().strip()
         if not word:
-            # do nothing if empty
             return
-        # Close the input window immediately (user requested this)
         self.close_input_window()
-
-        # Start background thread to fetch data; do NOT create a results window yet.
         lookup_thread = threading.Thread(target=self.run_lookup_and_update_gui, args=(word,), daemon=True)
         lookup_thread.start()
 
     def run_lookup_and_update_gui(self, word):
-        # This runs in a background thread. Catch exceptions and report back to main thread.
         try:
             data = get_word_data(word)
         except Exception as e:
-            # unexpected exception — schedule error dialog on main thread
             self.root.after(0, lambda: messagebox.showerror("Lookup error", f"An unexpected error occurred: {e}"))
             return
 
-        # Handle explicit network error sentinel from get_word_data
         if isinstance(data, dict) and data.get('network_error'):
             err_detail = data.get('error', 'Network error')
             self.root.after(0, lambda: messagebox.showerror("Network error",
                                                             f"Could not reach the lookup services.\nPlease check your internet connection.\n\nDetails: {err_detail}"))
             return
 
-        # If get_word_data returns None => word not found (no useful data)
         if data is None:
             self.root.after(0, lambda: messagebox.showinfo("No results", f"No results found for '{word}'."))
             return
 
-        # Otherwise format and show results window on main thread
         formatted_results = format_data_for_display(word, data)
-
-        # We pass the original `word` to the display function so it knows what to highlight.
         self.root.after(0, lambda: self.display_results(formatted_results, f"Results for '{word}'", word))
 
     def close_result_window(self, event=None):
-        """Close the results window (safe to call even if it doesn't exist)."""
         try:
             if self.result_window and self.result_window.winfo_exists():
                 self.result_window.destroy()
@@ -509,8 +488,6 @@ class WordLookupApp:
             pass
 
     def display_results(self, content, title="Results", search_word=None):
-        """Create a centered results window, bind Esc, and highlight the search_word."""
-        # Destroy previous results window if present
         if self.result_window and self.result_window.winfo_exists():
             try:
                 self.result_window.destroy()
@@ -521,19 +498,13 @@ class WordLookupApp:
         self.result_window.title(title)
         self.result_window.attributes("-topmost", True)
 
-        # ScrolledText widget
         self.result_text_widget = scrolledtext.ScrolledText(
             self.result_window, wrap=tk.WORD, width=80, height=25
         )
         self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.result_text_widget.insert(tk.INSERT, content)
-
         self.result_text_widget.config(state=tk.DISABLED)
-
-        # Bind Esc to close results window
         self.result_window.bind("<Escape>", lambda e: self.close_result_window())
-
-        # Force layout so window has actual pixel size, then center it
         self.result_window.update_idletasks()
         win_w = self.result_window.winfo_width()
         win_h = self.result_window.winfo_height()
@@ -543,54 +514,18 @@ class WordLookupApp:
         y = (screen_h // 2) - (win_h // 2)
         self.result_window.geometry(f"+{x}+{y}")
 
-        # Focus and remove topmost shortly after
         self.result_window.lift()
         self.result_window.focus_force()
         self.result_window.after(200, lambda: self.result_window.attributes("-topmost", False))
 
-    def update_result_window(self, content, word):
-        """Update the existing results window's content and re-center it."""
-        if self.result_window and self.result_window.winfo_exists() and self.result_text_widget:
-            try:
-                self.result_window.title(f"Results for '{word}'")
-                self.result_text_widget.config(state=tk.NORMAL)
-                self.result_text_widget.delete('1.0', tk.END)
-                self.result_text_widget.insert('1.0', content)
-                self.result_text_widget.config(state=tk.DISABLED)
-
-                # Re-center the window after the content change (in case size changed)
-                self.result_window.update_idletasks()
-                win_w = self.result_window.winfo_width()
-                win_h = self.result_window.winfo_height()
-                screen_w = self.result_window.winfo_screenwidth()
-                screen_h = self.result_window.winfo_screenheight()
-                x = (screen_w // 2) - (win_w // 2)
-                y = (screen_h // 2) - (win_h // 2)
-                self.result_window.geometry(f"+{x}+{y}")
-
-                self.result_window.lift()
-                self.result_window.focus_force()
-            except Exception:
-                pass
-        else:
-            # If no result window exists, create one
-            self.display_results(content, f"Results for '{word}'")
-
     def create_tray_icon(self):
-        # Try multiple possible icon names/paths
         possible_icons = ["app.png", "tray_icon.png", "app.ico"]
         img = None
-
         for icon_name in possible_icons:
             try:
                 image_path = resource_path(icon_name)
-                print(f"Trying to load icon: {image_path}")
-
                 if os.path.exists(image_path):
-                    if icon_name.endswith('.ico'):
-                        img = Image.open(image_path)
-                    else:
-                        img = Image.open(image_path)
+                    img = Image.open(image_path)
                     print(f"Successfully loaded icon: {icon_name}")
                     break
             except Exception as e:
@@ -599,27 +534,20 @@ class WordLookupApp:
 
         if img is None:
             print("All icon loading attempts failed. Using fallback.")
-            # Create a more distinctive fallback icon
             img = Image.new('RGB', (64, 64), color=(30, 144, 255))
-            # Add a simple "W" for Word Lookup
             try:
                 draw = ImageDraw.Draw(img)
-                # Try to use a default font, fall back to basic if not available
-                try:
-                    font = ImageFont.truetype("arial.ttf", 40)
-                except:
-                    font = ImageFont.load_default()
+                font = ImageFont.truetype("arial.ttf", 40)
                 draw.text((20, 10), "W", fill=(255, 255, 255), font=font)
-            except:
+            except Exception:
                 pass
 
-        # Menu items
         menu = pystray.Menu(
             pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window)),
-            pystray.MenuItem('Exit', lambda: self.root.after(0, self.on_tray_exit()))
+            pystray.MenuItem('Customize Shortcut', lambda: self.root.after(0, self.open_shortcut_window)),
+            pystray.MenuItem('Exit', self.on_tray_exit)
         )
 
-        # Use APP_NAME as the icon name and tooltip/title
         icon = pystray.Icon(APP_NAME, img, APP_NAME, menu)
         self.tray_icon = icon
 
@@ -632,122 +560,118 @@ class WordLookupApp:
         t = threading.Thread(target=run_icon, daemon=True)
         t.start()
 
+    def open_shortcut_window(self):
+        if hasattr(self, 'shortcut_window') and self.shortcut_window.winfo_exists():
+            self.shortcut_window.lift()
+            self.shortcut_window.focus_force()
+            return
+
+        self.shortcut_window = Toplevel(self.root)
+        self.shortcut_window.title("Customize Shortcut")
+        self.shortcut_window.attributes("-topmost", True)
+        self.shortcut_window.resizable(False, False)
+
+        self.new_shortcut_var = tk.StringVar()
+        self.new_shortcut_var.set(self.hotkey)
+
+        Label(self.shortcut_window, text=f"Current Shortcut:", padx=20).pack(pady=(10, 0))
+        Label(self.shortcut_window, text=f"{self.hotkey}", font=tkfont.Font(weight="bold")).pack()
+        Label(self.shortcut_window, text="Click the box below and press your new combination:", padx=20).pack(pady=(15, 5))
+        
+        entry = Entry(self.shortcut_window, textvariable=self.new_shortcut_var, width=30, justify='center', font=tkfont.Font(size=12))
+        entry.pack(pady=5, padx=20)
+
+        def on_key_press(event):
+            entry.config(state=tk.NORMAL)
+            entry.delete(0, tk.END)
+            modifiers = []
+            if event.state & 0x0004: modifiers.append('<ctrl>')
+            if event.state & 0x20000: modifiers.append('<alt>')
+            if event.state & 0x0001: modifiers.append('<shift>')
+            if sys.platform == "darwin" and event.state & 0x0008: modifiers.append('<cmd>')
+            if sys.platform == "win32" and event.state & 0x0008: modifiers.append('<cmd>')
+
+            key = event.keysym.lower()
+            if key in ['control_l', 'control_r', 'alt_l', 'alt_r', 'shift_l', 'shift_r', 'super_l', 'super_r', 'meta_l', 'meta_r']:
+                entry.config(state='readonly')
+                return "break"
+            
+            main_key = f'<{key}>' if len(key) > 1 else key
+            shortcut_parts = sorted(list(set(modifiers))) + [main_key]
+            shortcut_str = "+".join(shortcut_parts)
+            self.new_shortcut_var.set(shortcut_str)
+            entry.config(state='readonly')
+            return "break"
+
+        entry.bind("<KeyPress>", on_key_press)
+        entry.config(state='readonly')
+
+        def save_and_close():
+            new_shortcut = self.new_shortcut_var.get()
+            if not new_shortcut or '+' not in new_shortcut:
+                messagebox.showwarning("Invalid Shortcut", "Shortcut must include a modifier key (e.g., Ctrl, Alt) plus another key.", parent=self.shortcut_window)
+                return
+            self.restart_hotkey_listener(new_shortcut)
+            self.shortcut_window.destroy()
+            messagebox.showinfo("Success", f"Shortcut successfully changed to {new_shortcut}.")
+
+        button_frame = tk.Frame(self.shortcut_window)
+        button_frame.pack(pady=10, padx=20, fill='x')
+        tk.Button(button_frame, text="Save", command=save_and_close).pack(side=tk.RIGHT, padx=5)
+        tk.Button(button_frame, text="Cancel", command=self.shortcut_window.destroy).pack(side=tk.RIGHT)
+
+        self.shortcut_window.update_idletasks()
+        x = (self.shortcut_window.winfo_screenwidth() // 2) - (self.shortcut_window.winfo_width() // 2)
+        y = (self.shortcut_window.winfo_screenheight() // 2) - (self.shortcut_window.winfo_height() // 2)
+        self.shortcut_window.geometry(f'+{x}+{y}')
+        entry.focus_set()
+
     def on_tray_exit(self):
-        def _exit():
-            try:
-                if self.tray_icon:
-                    try:
-                        self.tray_icon.stop()
-                    except Exception:
-                        pass
-                if self.hotkey_listener:
-                    try:
-                        self.hotkey_listener.stop()
-                    except Exception:
-                        pass
-                self.root.quit()
-            except Exception:
-                try:
-                    self.root.destroy()
-                except Exception:
-                    pass
-        return _exit
+        self.root.after(0, self.on_close)
 
     def on_close(self):
         try:
-            if self.tray_icon:
-                try:
-                    self.tray_icon.stop()
-                except Exception:
-                    pass
-            if self.hotkey_listener:
-                try:
-                    self.hotkey_listener.stop()
-                except Exception:
-                    pass
+            if self.tray_icon: self.tray_icon.stop()
+            if self.hotkey_listener: self.hotkey_listener.stop()
         finally:
-            try:
-                self.root.destroy()
-            except Exception:
-                pass
+            self.root.destroy()
 
-# --- Hotkey ---
-def start_app_hotkey():
-    print("Hotkey triggered!")  # Debug print
-    try:
-        # Make sure the main window is available
-        if hasattr(app, 'root') and app.root:
-            app.root.after(0, app.show_input_window)
-            print("Scheduled show_input_window")
-        else:
-            print("App or root not available")
-    except Exception as e:
-        print(f"Error in start_app_hotkey: {e}")
+    def start_hotkey_listener(self, hotkey_string):
+        """ This method runs in a dedicated thread and blocks until stopped. """
+        print(f"Thread started for hotkey: {hotkey_string}")
 
-
-def create_and_start_hotkey_listener():
-    print("Setting up hotkey listener...")
-
-    # Try different hotkey formats - pynput can be picky about format
-    hotkey_formats = [
-        '<ctrl>+<alt>+w',  # Most common format
-        '<ctrl>+<alt>+W',  # Try uppercase
-        'ctrl+alt+w',      # Without angle brackets
-        'ctrl+alt+W',      # Without angle brackets, uppercase
-    ]
-
-    listener = None
-    for hotkey_format in hotkey_formats:
+        def on_hotkey_activated():
+            print(f"Hotkey '{self.hotkey}' activated!")
+            if hasattr(self, 'root') and self.root:
+                self.root.after(0, self.show_input_window)
+        
         try:
-            print(f"Trying hotkey format: {hotkey_format}")
-            hotkeys = {hotkey_format: start_app_hotkey}
+            hotkeys = {hotkey_string: on_hotkey_activated}
             listener = keyboard.GlobalHotKeys(hotkeys)
-            app.hotkey_listener = listener
-            listener.start()
-            print(f"Successfully set up hotkey with format: {hotkey_format}")
-            break
+            self.hotkey_listener = listener
+            listener.run()  # This is a blocking call, perfect for a thread
+            print(f"Listener for '{hotkey_string}' has stopped.")
         except Exception as e:
-            print(f"Failed with format {hotkey_format}: {e}")
-            if listener:
-                try:
-                    listener.stop()
-                except:
-                    pass
-            listener = None
-            continue
+            print(f"ERROR in hotkey thread for '{hotkey_string}': {e}")
+            self.root.after(0, lambda: messagebox.showerror(
+                "Hotkey Error",
+                f"Failed to register hotkey '{hotkey_string}'. It might be in use by another application."
+            ))
+    
+    def restart_hotkey_listener(self, new_hotkey):
+        """ Stops the current listener and starts a new one in a new thread. """
+        self.hotkey = new_hotkey
+        self.save_config()
 
-    if not listener:
-        print("ERROR: Could not set up any hotkey format!")
-        return
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+            print("Signaled old listener to stop.")
 
-    # Keep the listener alive
-    try:
-        listener.join()
-    except Exception as e:
-        print(f"Hotkey listener error: {e}")
+        self.hotkey_thread = threading.Thread(target=self.start_hotkey_listener, args=(self.hotkey,), daemon=True)
+        self.hotkey_thread.start()
+        print("Started new hotkey listener thread.")
 
-
-def create_simple_hotkey_listener():
-    """Alternative simpler hotkey implementation"""
-    print("Setting up simple hotkey listener")
-
-    def on_hotkey():
-        print("Simple hotkey activated!")
-        if hasattr(app, 'root') and app.root:
-            app.root.after(0, app.show_input_window)
-
-    try:
-        # Try the most standard format
-        listener = keyboard.GlobalHotKeys({'<ctrl>+<alt>+w': on_hotkey})
-        app.hotkey_listener = listener
-        listener.start()
-        print("Simple hotkey listener started successfully")
-        return listener
-    except Exception as e:
-        print(f"Simple hotkey setup failed: {e}")
-        return None
-
-# Updated main function
+# --- Main execution ---
 def main():
     global app
     print(f"Starting {APP_NAME}...")
@@ -759,22 +683,9 @@ def main():
     app = WordLookupApp(root)
     print("App initialized")
 
-    # Try the enhanced hotkey listener first
-    print("Setting up hotkey listener...")
-    hk_thread = threading.Thread(target=create_and_start_hotkey_listener, daemon=True)
-    hk_thread.start()
+    # Start the initial hotkey listener based on loaded config
+    app.restart_hotkey_listener(app.hotkey)
 
-    # Give it a moment to initialize
-    time.sleep(0.5)
-
-    # If that didn't work, try the simple version
-    if not hasattr(app, 'hotkey_listener') or not app.hotkey_listener:
-        print("Trying simple hotkey listener...")
-        simple_listener = create_simple_hotkey_listener()
-        if simple_listener:
-            app.hotkey_listener = simple_listener
-
-    # tray icon
     try:
         app.create_tray_icon()
         print("Tray icon created")
@@ -785,14 +696,10 @@ def main():
     try:
         root.mainloop()
     finally:
-        # Clean shutdown
         print("Shutting down...")
         try:
             if hasattr(app, 'hotkey_listener') and app.hotkey_listener:
                 app.hotkey_listener.stop()
-        except Exception:
-            pass
-        try:
             if hasattr(app, 'tray_icon') and app.tray_icon:
                 app.tray_icon.stop()
         except Exception:
