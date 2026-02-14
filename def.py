@@ -8,7 +8,7 @@ import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import scrolledtext, Toplevel, Entry, Label, messagebox
+from tkinter import scrolledtext, Toplevel, Entry, Label, messagebox, Button
 from pynput import keyboard
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -26,7 +26,6 @@ import argparse
 import json
 
 # Application display/config name (string "def").
-# IMPORTANT: don't use the Python keyword `def` as a variable name — use APP_NAME instead.
 APP_NAME = "def"
 
 
@@ -35,31 +34,23 @@ def resource_path(relative_path):
     try:
         # PyInstaller creates a temp folder and stores path in _MEIPASS
         base_path = sys._MEIPASS
-        print(f"Running as bundled app, base_path: {base_path}")
     except AttributeError:
         base_path = os.path.abspath(".")
-        print(f"Running as script, base_path: {base_path}")
 
     full_path = os.path.join(base_path, relative_path)
-    print(f"Looking for icon at: {full_path}")
-    print(f"File exists: {os.path.exists(full_path)}")
     return full_path
 
 # --- Startup Installer ---
 def add_to_startup():
     """Adds the script to the OS's startup programs."""
-
-    # This is the key: PyInstaller sets sys.frozen to True when running as a bundled app.
     is_frozen = getattr(sys, 'frozen', False)
 
     if is_frozen:
-        # We are running as a compiled executable. The path is simply sys.executable.
         executable_path = os.path.abspath(sys.executable)
         command = f'"{executable_path}"'
     else:
-        # We are running as a .py script.
         script_path = os.path.abspath(sys.argv[0])
-        python_exe = sys.executable.replace("python.exe", "pythonw.exe") # Use pythonw for no console on Windows
+        python_exe = sys.executable.replace("python.exe", "pythonw.exe") 
         command = f'"{python_exe}" "{script_path}"'
 
     platform = sys.platform
@@ -69,27 +60,20 @@ def add_to_startup():
         add_to_startup_linux(command)
     elif platform == "darwin":
         add_to_startup_macos(command)
-    else:
-        print(f"Startup installation not supported on this platform: {platform}")
 
 
 def add_to_startup_windows(command):
-    """Adds the app to Windows startup via the registry."""
     try:
         import winreg
         key_path = r"Software\\Microsoft\\Windows\\CurrentVersion\\Run"
         reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
-
         with reg_key:
-            # Use APP_NAME as the registry value name so the app is easily identifiable
             winreg.SetValueEx(reg_key, APP_NAME, 0, winreg.REG_SZ, command)
-        print(f"Successfully added {APP_NAME} to Windows startup.")
     except Exception as e:
         print(f"Error adding to Windows startup: {e}")
 
 
 def add_to_startup_linux(command):
-    """Adds a .desktop file to the autostart directory on Linux."""
     try:
         autostart_dir = os.path.expanduser("~/.config/autostart")
         if not os.path.exists(autostart_dir):
@@ -105,24 +89,18 @@ Terminal=false
 """
         with open(os.path.join(autostart_dir, f"{APP_NAME}.desktop"), "w") as f:
             f.write(desktop_entry.strip())
-        print(f"Successfully added {APP_NAME} to Linux startup.")
     except Exception as e:
         print(f"Error adding to Linux startup: {e}")
 
 
 def add_to_startup_macos(command):
-    """Creates a launchd .plist file for macOS startup. Note: requires splitting command."""
     try:
-        # For plist, command needs to be split into an array of strings
         import shlex
         program_args = shlex.split(command)
-
         plist_name = f"com.user.{APP_NAME}.plist"
         launch_agents_dir = os.path.expanduser("~/Library/LaunchAgents")
-
         if not os.path.exists(launch_agents_dir):
             os.makedirs(launch_agents_dir)
-
         plist_content = f"""
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -141,49 +119,35 @@ def add_to_startup_macos(command):
 """
         with open(os.path.join(launch_agents_dir, plist_name), "w") as f:
             f.write(plist_content.strip())
-        print(f"Successfully added {APP_NAME} to macOS startup.")
-        print("You may need to log out and back in for it to take effect.")
     except Exception as e:
         print(f"Error adding to macOS startup: {e}")
 
 
 def get_config_path():
-    """Gets the path to the app's config file in a cross-platform way."""
     if sys.platform == "win32":
-        # C:\Users\<User>\AppData\Roaming\<APP_NAME>
         config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
     else:
-        # ~/.config/<APP_NAME>
         config_dir = os.path.join(os.path.expanduser('~'), '.config', APP_NAME)
-
     os.makedirs(config_dir, exist_ok=True)
     return os.path.join(config_dir, "settings.json")
 
 
 def setup_auto_start():
-    """
-    Checks if this is the first run. If it is, silently adds the app
-    to startup and updates the config file.
-    """
     config_path = get_config_path()
     config = {}
-    # Read existing config to avoid overwriting it
     if os.path.exists(config_path):
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
         except (json.JSONDecodeError, IOError):
-            pass  # Will create a new file below if reading fails
+            pass
 
     if not config.get("startup_configured"):
-        print(f"First run detected for startup. Adding {APP_NAME} to startup...")
         try:
             add_to_startup()
             config["startup_configured"] = True
-            # Write the updated config back
             with open(config_path, 'w') as f:
                 json.dump(config, f, indent=4)
-            print("Successfully configured application for auto-start.")
         except Exception as e:
             print(f"Error: Could not add application to startup: {e}")
 
@@ -212,12 +176,6 @@ def wrap_string(string, width):
 
 # --- Data fetcher ---
 def get_word_data(word):
-    """
-    Returns:
-      - dict with data (same shape as before) on success,
-      - None if lookup completed successfully but no useful data found (word not found),
-      - dict with {'network_error': True, 'error': '...'} if there was a network/connectivity problem.
-    """
     results = {
         'short_def': None,
         'long_def': None,
@@ -227,7 +185,6 @@ def get_word_data(word):
     }
     error_messages = []
 
-    # Try to create scraper; treat failure here as a network/initialization problem
     try:
         scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False},
@@ -236,10 +193,7 @@ def get_word_data(word):
     except Exception as e:
         return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
 
-    # Helper to treat requests-related exceptions as network errors
     def treat_request_as_network(exc):
-        # requests raises requests.exceptions.RequestException for many network issues.
-        # Also treat socket.gaierror / OSError as network problems.
         return isinstance(exc, requests.exceptions.RequestException) or isinstance(exc, socket.gaierror) or isinstance(exc, OSError)
 
     # Vocabulary.com
@@ -255,7 +209,6 @@ def get_word_data(word):
         if not results['short_def'] and not results['long_def']:
             error_messages.append(f"Vocabulary.com: Could not find definitions for '{word}'.")
     except Exception as e:
-        # If this looks like a network error, return network sentinel immediately.
         if treat_request_as_network(e):
             return {'network_error': True, 'error': f'Vocabulary.com request failed: {e}'}
         error_messages.append(f"Vocabulary.com Error: {e}")
@@ -269,8 +222,6 @@ def get_word_data(word):
         ar_words_tags = soup_reverso.select("span.display-term")
         eng_sents_tags = soup_reverso.select("div.example div.ltr span.text")
         results['ar_words'] = [el.get_text(strip=True) for el in ar_words_tags if el.get_text(strip=True)]
-
-        # Use ' '.join(el.stripped_strings) to correctly handle spaces around highlighted words.
         results['eng_examples'] = [' '.join(el.stripped_strings) for el in eng_sents_tags if el.get_text(strip=True)]
 
         if not results['ar_words'] and not results['eng_examples']:
@@ -283,7 +234,6 @@ def get_word_data(word):
     if error_messages:
         results['error'] = "\n".join(error_messages)
 
-    # If no useful data at all, return None to indicate lookup produced nothing useful
     if not any(v for k, v in results.items() if k != 'error' and v):
         return None
 
@@ -297,7 +247,6 @@ def format_data_for_display(search_word, data):
     output_lines = []
     divider = "-" * 50
 
-    # Arabic words
     output_lines.append(divider)
     if data.get('ar_words'):
         ar_lines = x_word_per_line(data['ar_words'], 5)
@@ -308,7 +257,6 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No Arabic translations found.", SPACE))
 
-    # Short def
     output_lines.append(divider)
     if data.get('short_def'):
         short_def_lines = wrap_string(data['short_def'], WRAP_WIDTH)
@@ -317,7 +265,6 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No short definition found.", SPACE))
 
-    # Long def
     output_lines.append(divider)
     if data.get('long_def'):
         long_def_lines = wrap_string(data['long_def'], WRAP_WIDTH)
@@ -326,15 +273,13 @@ def format_data_for_display(search_word, data):
     else:
         output_lines.append(add_padding("No long definition found.", SPACE))
 
-    # Examples
     output_lines.append(divider)
     if data.get('eng_examples'):
         for sentence in data['eng_examples']:
             wrapped_lines = wrap_string(sentence, WRAP_WIDTH)
             for line in wrapped_lines:
-                # Simply add the line, no more asterisk highlighting.
                 output_lines.append(add_padding(line, SPACE))
-            output_lines.append("")  # blank line between examples
+            output_lines.append("")
     else:
         output_lines.append(add_padding("No English examples found.", SPACE))
 
@@ -360,17 +305,21 @@ class WordLookupApp:
         self.result_text_widget = None
         self.tray_icon = None
 
-        # --- New Hotkey & Config Management ---
+        # --- Font Configuration ---
+        # Default Tkinter font is usually ~9-10. Doubling it suggests ~20.
+        self.base_font_size = 20 
+        self.current_font_size = self.base_font_size
+        self.app_font = tkfont.Font(family="Arial", size=self.current_font_size)
+
+        # --- Hotkey & Config Management ---
         self.config_path = get_config_path()
         self.config = {}
         self.default_hotkey = '<ctrl>+<alt>+w'
         self.hotkey = self.default_hotkey
-        self.load_config()  # Load saved hotkey on startup
+        self.load_config()
 
         self.hotkey_listener = None
         self.hotkey_thread = None
-        # --- End New ---
-
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def load_config(self):
@@ -379,13 +328,10 @@ class WordLookupApp:
                 with open(self.config_path, 'r') as f:
                     self.config = json.load(f)
                 self.hotkey = self.config.get('hotkey', self.default_hotkey)
-                print(f"Loaded config. Hotkey is: {self.hotkey}")
             else:
-                print("No config file found. Using default hotkey.")
                 self.config = {'hotkey': self.default_hotkey}
-                self.save_config()  # Save the default on first run
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"Error loading config file: {e}. Using default settings.")
+                self.save_config()
+        except (json.JSONDecodeError, IOError):
             self.hotkey = self.default_hotkey
             self.config = {'hotkey': self.hotkey}
 
@@ -394,7 +340,6 @@ class WordLookupApp:
             self.config['hotkey'] = self.hotkey
             with open(self.config_path, 'w') as f:
                 json.dump(self.config, f, indent=4)
-            print(f"Config saved. Hotkey is now: {self.hotkey}")
         except IOError as e:
             print(f"Error saving config file: {e}")
 
@@ -415,16 +360,19 @@ class WordLookupApp:
 
         self.input_window.attributes("-topmost", True)
 
-        window_width = 320
-        window_height = 90
+        # Adjust window size for larger font
+        window_width = 500
+        window_height = 140
         screen_width = self.input_window.winfo_screenwidth()
         screen_height = self.input_window.winfo_screenheight()
         x_cordinate = int((screen_width / 2) - (window_width / 2))
         y_cordinate = int((screen_height / 2) - (window_height / 2))
         self.input_window.geometry(f"{window_width}x{window_height}+{x_cordinate}+{y_cordinate}")
 
-        Label(self.input_window, text="Enter word to look up:").pack(pady=5)
-        self.entry = Entry(self.input_window, width=40)
+        # Use the custom large font
+        Label(self.input_window, text="Enter word to look up:", font=self.app_font).pack(pady=5)
+        
+        self.entry = Entry(self.input_window, width=30, font=self.app_font)
         self.entry.pack(pady=5, padx=10)
         self.input_window.lift()
         self.input_window.focus_force()
@@ -467,8 +415,7 @@ class WordLookupApp:
 
         if isinstance(data, dict) and data.get('network_error'):
             err_detail = data.get('error', 'Network error')
-            self.root.after(0, lambda: messagebox.showerror("Network error",
-                                                            f"Could not reach the lookup services.\nPlease check your internet connection.\n\nDetails: {err_detail}"))
+            self.root.after(0, lambda: messagebox.showerror("Network error", f"Details: {err_detail}"))
             return
 
         if data is None:
@@ -487,6 +434,32 @@ class WordLookupApp:
         except Exception:
             pass
 
+    def zoom_text(self, event=None, direction=0):
+        """
+        Handles zoom. 
+        direction: +1 for in, -1 for out, 0 if using wheel event.
+        """
+        if event:
+            # Check for Windows/MacOS MouseWheel
+            if event.delta:
+                if event.delta > 0:
+                    direction = 1
+                else:
+                    direction = -1
+            # Linux Button-4 (up) / Button-5 (down)
+            elif event.num == 4:
+                direction = 1
+            elif event.num == 5:
+                direction = -1
+
+        new_size = self.current_font_size + (direction * 2)
+        # Limit min/max size
+        if new_size < 8: new_size = 8
+        if new_size > 72: new_size = 72
+        
+        self.current_font_size = new_size
+        self.app_font.configure(size=self.current_font_size)
+
     def display_results(self, content, title="Results", search_word=None):
         if self.result_window and self.result_window.winfo_exists():
             try:
@@ -498,14 +471,40 @@ class WordLookupApp:
         self.result_window.title(title)
         self.result_window.attributes("-topmost", True)
 
+        # Scrolled Text with custom font
         self.result_text_widget = scrolledtext.ScrolledText(
-            self.result_window, wrap=tk.WORD, width=80, height=25
+            self.result_window, wrap=tk.WORD, width=60, height=15, 
+            font=self.app_font # Apply the large font
         )
         self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
         self.result_text_widget.insert(tk.INSERT, content)
         self.result_text_widget.config(state=tk.DISABLED)
+
+        # --- Zoom Bindings ---
+        # Windows/Mac
+        self.result_text_widget.bind("<Control-MouseWheel>", self.zoom_text)
+        # Linux
+        self.result_text_widget.bind("<Control-Button-4>", lambda e: self.zoom_text(e, 1))
+        self.result_text_widget.bind("<Control-Button-5>", lambda e: self.zoom_text(e, -1))
+        
+        # --- Corner Icon Controls (Zoom Buttons) ---
+        # A floating frame in the top-right corner to allow mouse-click zooming
+        zoom_frame = tk.Frame(self.result_window, bg="#ddd")
+        zoom_frame.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=10) # Position top right
+
+        btn_plus = Button(zoom_frame, text="+", font=("Arial", 12, "bold"), width=2, 
+                          command=lambda: self.zoom_text(direction=1))
+        btn_plus.pack(side=tk.LEFT, padx=1)
+        
+        btn_minus = Button(zoom_frame, text="-", font=("Arial", 12, "bold"), width=2, 
+                           command=lambda: self.zoom_text(direction=-1))
+        btn_minus.pack(side=tk.LEFT, padx=1)
+
+        # Standard Bindings
         self.result_window.bind("<Escape>", lambda e: self.close_result_window())
         self.result_window.update_idletasks()
+        
+        # Centering logic adjusted for potentially larger window
         win_w = self.result_window.winfo_width()
         win_h = self.result_window.winfo_height()
         screen_w = self.result_window.winfo_screenwidth()
@@ -526,14 +525,11 @@ class WordLookupApp:
                 image_path = resource_path(icon_name)
                 if os.path.exists(image_path):
                     img = Image.open(image_path)
-                    print(f"Successfully loaded icon: {icon_name}")
                     break
-            except Exception as e:
-                print(f"Failed to load {icon_name}: {e}")
+            except Exception:
                 continue
 
         if img is None:
-            print("All icon loading attempts failed. Using fallback.")
             img = Image.new('RGB', (64, 64), color=(30, 144, 255))
             try:
                 draw = ImageDraw.Draw(img)
@@ -574,11 +570,12 @@ class WordLookupApp:
         self.new_shortcut_var = tk.StringVar()
         self.new_shortcut_var.set(self.hotkey)
 
-        Label(self.shortcut_window, text=f"Current Shortcut:", padx=20).pack(pady=(10, 0))
-        Label(self.shortcut_window, text=f"{self.hotkey}", font=tkfont.Font(weight="bold")).pack()
-        Label(self.shortcut_window, text="Click the box below and press your new combination:", padx=20).pack(pady=(15, 5))
+        # Using app_font here too for consistency, or standard size
+        Label(self.shortcut_window, text=f"Current Shortcut:", padx=20, font=("Arial", 12)).pack(pady=(10, 0))
+        Label(self.shortcut_window, text=f"{self.hotkey}", font=("Arial", 12, "bold")).pack()
+        Label(self.shortcut_window, text="Click box and press new combination:", padx=20).pack(pady=(15, 5))
         
-        entry = Entry(self.shortcut_window, textvariable=self.new_shortcut_var, width=30, justify='center', font=tkfont.Font(size=12))
+        entry = Entry(self.shortcut_window, textvariable=self.new_shortcut_var, width=30, justify='center', font=("Arial", 12))
         entry.pack(pady=5, padx=20)
 
         def on_key_press(event):
@@ -609,11 +606,11 @@ class WordLookupApp:
         def save_and_close():
             new_shortcut = self.new_shortcut_var.get()
             if not new_shortcut or '+' not in new_shortcut:
-                messagebox.showwarning("Invalid Shortcut", "Shortcut must include a modifier key (e.g., Ctrl, Alt) plus another key.", parent=self.shortcut_window)
+                messagebox.showwarning("Invalid Shortcut", "Shortcut must include a modifier key.", parent=self.shortcut_window)
                 return
             self.restart_hotkey_listener(new_shortcut)
             self.shortcut_window.destroy()
-            messagebox.showinfo("Success", f"Shortcut successfully changed to {new_shortcut}.")
+            messagebox.showinfo("Success", f"Shortcut changed to {new_shortcut}.")
 
         button_frame = tk.Frame(self.shortcut_window)
         button_frame.pack(pady=10, padx=20, fill='x')
@@ -637,11 +634,7 @@ class WordLookupApp:
             self.root.destroy()
 
     def start_hotkey_listener(self, hotkey_string):
-        """ This method runs in a dedicated thread and blocks until stopped. """
-        print(f"Thread started for hotkey: {hotkey_string}")
-
         def on_hotkey_activated():
-            print(f"Hotkey '{self.hotkey}' activated!")
             if hasattr(self, 'root') and self.root:
                 self.root.after(0, self.show_input_window)
         
@@ -649,8 +642,7 @@ class WordLookupApp:
             hotkeys = {hotkey_string: on_hotkey_activated}
             listener = keyboard.GlobalHotKeys(hotkeys)
             self.hotkey_listener = listener
-            listener.run()  # This is a blocking call, perfect for a thread
-            print(f"Listener for '{hotkey_string}' has stopped.")
+            listener.run()
         except Exception as e:
             print(f"ERROR in hotkey thread for '{hotkey_string}': {e}")
             self.root.after(0, lambda: messagebox.showerror(
@@ -659,44 +651,35 @@ class WordLookupApp:
             ))
     
     def restart_hotkey_listener(self, new_hotkey):
-        """ Stops the current listener and starts a new one in a new thread. """
         self.hotkey = new_hotkey
         self.save_config()
 
         if self.hotkey_listener:
             self.hotkey_listener.stop()
-            print("Signaled old listener to stop.")
 
         self.hotkey_thread = threading.Thread(target=self.start_hotkey_listener, args=(self.hotkey,), daemon=True)
         self.hotkey_thread.start()
-        print("Started new hotkey listener thread.")
 
 # --- Main execution ---
 def main():
     global app
     print(f"Starting {APP_NAME}...")
 
-    # Silently configure auto-start on the first run.
     setup_auto_start()
 
     root = tk.Tk()
     app = WordLookupApp(root)
-    print("App initialized")
-
-    # Start the initial hotkey listener based on loaded config
+    
     app.restart_hotkey_listener(app.hotkey)
 
     try:
         app.create_tray_icon()
-        print("Tray icon created")
     except Exception as e:
         print(f"Could not create tray icon: {e}")
 
-    print("Starting main loop...")
     try:
         root.mainloop()
     finally:
-        print("Shutting down...")
         try:
             if hasattr(app, 'hotkey_listener') and app.hotkey_listener:
                 app.hotkey_listener.stop()
