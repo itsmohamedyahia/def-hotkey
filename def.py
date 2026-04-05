@@ -1,12 +1,13 @@
 """
 Word Lookup App — show input window with Ctrl+Alt+W.
-Highly Optimized for Reliability, Instant Window Focus, and Dynamic Text Wrapping.
+Clipboard lookup with Ctrl+Alt+D.
+Dark-themed, feature-rich dictionary with search history and caching.
 """
 import sys
 import threading
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import scrolledtext, Toplevel, Entry, Label, messagebox, Button
+from tkinter import scrolledtext, Toplevel, Entry, Label, Button
 from pynput import keyboard
 import cloudscraper
 from bs4 import BeautifulSoup
@@ -19,8 +20,25 @@ import socket
 import os
 import json
 
-# Application display/config name
 APP_NAME = "def"
+
+# --- Dark Theme Colors (Catppuccin Mocha) ---
+C = {
+    'bg':       '#1e1e2e',
+    'surface':  '#313244',
+    'overlay':  '#45475a',
+    'text':     '#cdd6f4',
+    'subtext':  '#a6adc8',
+    'blue':     '#89b4fa',
+    'green':    '#a6e3a1',
+    'gold':     '#f9e2af',
+    'red':      '#f38ba8',
+    'mauve':    '#cba6f7',
+    'teal':     '#94e2d5',
+    'peach':    '#fab387',
+    'lavender': '#b4befe',
+}
+
 
 def resource_path(relative_path):
     try:
@@ -29,6 +47,7 @@ def resource_path(relative_path):
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
 
+
 # --- Startup Installer ---
 def add_to_startup():
     is_frozen = getattr(sys, 'frozen', False)
@@ -36,7 +55,6 @@ def add_to_startup():
         command = f'"{os.path.abspath(sys.executable)}"'
     else:
         command = f'"{sys.executable.replace("python.exe", "pythonw.exe")}" "{os.path.abspath(sys.argv[0])}"'
-
     if sys.platform == "win32":
         try:
             import winreg
@@ -47,6 +65,7 @@ def add_to_startup():
         except Exception:
             pass
 
+
 def get_config_path():
     if sys.platform == "win32":
         config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
@@ -55,395 +74,684 @@ def get_config_path():
     os.makedirs(config_dir, exist_ok=True)
     return os.path.join(config_dir, "settings.json")
 
+
 def setup_auto_start():
     config_path = get_config_path()
     config = {}
     if os.path.exists(config_path):
         try:
-            with open(config_path, 'r') as f: config = json.load(f)
-        except: pass
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+        except Exception:
+            pass
     if not config.get("startup_configured"):
         try:
             add_to_startup()
             config["startup_configured"] = True
-            with open(config_path, 'w') as f: json.dump(config, f, indent=4)
-        except: pass
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
+        except Exception:
+            pass
+
+
+def check_connectivity():
+    """Quick internet connectivity check."""
+    try:
+        socket.create_connection(("8.8.8.8", 53), timeout=2)
+        return True
+    except OSError:
+        return False
+
 
 # --- Data fetcher ---
 def get_word_data(word):
-    results = {'short_def': None, 'long_def': None, 'ar_words': None, 'eng_examples': None, 'error': None}
+    """Fetch word data from multiple sources. Returns structured dict."""
+    results = {
+        'short_def': None, 'long_def': None, 'ar_words': None,
+        'eng_examples': None, 'error': None, 'phonetic': None,
+        'meanings': [], 'audio_url': None,
+    }
     error_messages = []
 
     try:
-        scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}, delay=10)
+        scraper = cloudscraper.create_scraper(
+            browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}, delay=10
+        )
     except Exception as e:
         return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
 
-    # 1. Fallback API for English Definitions (Highly Reliable)
+    # 1. Free Dictionary API — primary English source
     try:
-        api_url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}"
-        api_resp = requests.get(api_url, timeout=5)
+        api_resp = requests.get(
+            f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5
+        )
         if api_resp.status_code == 200:
             data = api_resp.json()[0]
-            meanings = data.get("meanings", [])
-            if meanings:
-                results['short_def'] = meanings[0]["definitions"][0].get("definition")
+            results['phonetic'] = data.get('phonetic')
+            for p in data.get('phonetics', []):
+                if p.get('audio'):
+                    results['audio_url'] = p['audio']
+                    break
+            for m in data.get('meanings', []):
+                meaning = {
+                    'pos': m.get('partOfSpeech', ''),
+                    'definitions': [],
+                    'synonyms': list(dict.fromkeys(m.get('synonyms', [])))[:6],
+                    'antonyms': list(dict.fromkeys(m.get('antonyms', [])))[:6],
+                }
+                for d in m.get('definitions', [])[:3]:
+                    meaning['definitions'].append({
+                        'text': d.get('definition', ''),
+                        'example': d.get('example'),
+                    })
+                results['meanings'].append(meaning)
+            if results['meanings']:
+                results['short_def'] = results['meanings'][0]['definitions'][0]['text']
     except Exception:
         pass
 
-    # 2. Vocabulary.com (For better long definitions if available)
+    # 2. Vocabulary.com — better long definitions
     try:
-        vocab_url = f"https://www.vocabulary.com/dictionary/{word}"
-        response_vocab = scraper.get(vocab_url, timeout=10)
-        if response_vocab.status_code == 200:
-            soup_vocab = BeautifulSoup(response_vocab.content, 'html.parser')
-            short_def_tag = soup_vocab.find('p', class_='short')
-            long_def_tag = soup_vocab.find('p', class_='long')
-            if short_def_tag and not results['short_def']:
-                results['short_def'] = " ".join(short_def_tag.stripped_strings)
-            if long_def_tag:
-                results['long_def'] = " ".join(long_def_tag.stripped_strings)
+        resp = scraper.get(f"https://www.vocabulary.com/dictionary/{word}", timeout=10)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.content, 'html.parser')
+            short_tag = soup.find('p', class_='short')
+            long_tag = soup.find('p', class_='long')
+            if short_tag and not results['short_def']:
+                results['short_def'] = " ".join(short_tag.stripped_strings)
+            if long_tag:
+                results['long_def'] = " ".join(long_tag.stripped_strings)
     except Exception as e:
-        error_messages.append(f"Vocab.com warning: {e}")
+        error_messages.append(f"Vocab.com: {e}")
 
-    # 3. Reverso Context (Arabic translation)
+    # 3. Reverso Context — Arabic translation + examples
     try:
-        reverso_url = f"https://context.reverso.net/translation/english-arabic/{word}"
-        response_reverso = scraper.get(reverso_url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
-        if response_reverso.status_code == 200:
-            soup_reverso = BeautifulSoup(response_reverso.content, "html.parser")
-            ar_words_tags = soup_reverso.select("span.display-term")
-            eng_sents_tags = soup_reverso.select("div.example div.ltr span.text")
-            results['ar_words'] = [el.get_text(strip=True) for el in ar_words_tags if el.get_text(strip=True)]
-            results['eng_examples'] = [' '.join(el.stripped_strings) for el in eng_sents_tags if el.get_text(strip=True)]
+        resp = scraper.get(
+            f"https://context.reverso.net/translation/english-arabic/{word}",
+            headers={'User-Agent': 'Mozilla/5.0'}, timeout=10
+        )
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.content, "html.parser")
+            results['ar_words'] = [
+                el.get_text(strip=True) for el in soup.select("span.display-term")
+                if el.get_text(strip=True)
+            ]
+            results['eng_examples'] = [
+                ' '.join(el.stripped_strings) for el in soup.select("div.example div.ltr span.text")
+                if el.get_text(strip=True)
+            ]
     except Exception as e:
-        error_messages.append(f"Reverso Context warning: {e}")
+        error_messages.append(f"Reverso: {e}")
 
     if error_messages and not (results['short_def'] or results['ar_words']):
         results['error'] = "\n".join(error_messages)
 
-    if not any(v for k, v in results.items() if k != 'error' and v):
-        return None
+    has_data = any(v for k, v in results.items() if k not in ('error', 'audio_url', 'phonetic') and v)
+    return results if has_data else None
 
-    return results
-
-# --- Formatter ---
-def format_data_for_display(search_word, data):
-    if data is None: return f"Could not find any results for '{search_word}'."
-    output_lines = []
-    divider = "-" * 50
-
-    output_lines.append(divider)
-    if data.get('ar_words'):
-        ar_words_str = " | ".join(data['ar_words'][:5])
-        bidi_text = get_display(arabic_reshaper.reshape(ar_words_str))
-        output_lines.append(bidi_text)
-    else:
-        output_lines.append("No Arabic translations found.")
-
-    output_lines.append(divider)
-    if data.get('short_def'):
-        output_lines.append(data['short_def'])
-    else:
-        output_lines.append("No short definition found.")
-
-    if data.get('long_def'):
-        output_lines.append(divider)
-        output_lines.append(data['long_def'])
-
-    output_lines.append(divider)
-    if data.get('eng_examples'):
-        for sentence in data['eng_examples'][:3]:  # Limit to 3 examples
-            output_lines.append("• " + sentence)
-            output_lines.append("") # Adds a blank line between examples
-    else:
-        output_lines.append("No English examples found.")
-
-    output_lines.append(divider)
-    return "\n".join(output_lines)
 
 # --- App class ---
 class WordLookupApp:
+    MAX_HISTORY = 20
+
     def __init__(self, root):
         self.root = root
         self.root.withdraw()
-        self.base_font_size = 20
-        self.app_font = tkfont.Font(family="Arial", size=self.base_font_size)
+        self.base_font_size = 18
+        self.app_font = tkfont.Font(family="Segoe UI", size=self.base_font_size)
 
         self.config_path = get_config_path()
         self.default_hotkey = '<ctrl>+<alt>+w'
+        self.default_clip_hotkey = '<ctrl>+<alt>+d'
         self.hotkey = self.default_hotkey
+        self.clip_hotkey = self.default_clip_hotkey
+        self.history = []
+        self.cache = {}
+        self._loading = False
+
         self.load_config()
 
         self.hotkey_listener = None
+        self.tray_icon = None
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # Setup persistent windows
         self.setup_input_window()
         self.setup_result_window()
 
+    # --- Config ---
     def load_config(self):
         try:
             if os.path.exists(self.config_path):
                 with open(self.config_path, 'r') as f:
-                    self.hotkey = json.load(f).get('hotkey', self.default_hotkey)
+                    cfg = json.load(f)
+                self.hotkey = cfg.get('hotkey', self.default_hotkey)
+                self.clip_hotkey = cfg.get('clip_hotkey', self.default_clip_hotkey)
+                self.history = cfg.get('history', [])
             else:
                 self.save_config()
-        except: pass
+        except Exception:
+            pass
 
     def save_config(self):
         try:
+            existing = {}
+            if os.path.exists(self.config_path):
+                with open(self.config_path, 'r') as f:
+                    existing = json.load(f)
+            existing.update({
+                'hotkey': self.hotkey,
+                'clip_hotkey': self.clip_hotkey,
+                'history': self.history[:self.MAX_HISTORY],
+            })
             with open(self.config_path, 'w') as f:
-                json.dump({'hotkey': self.hotkey}, f, indent=4)
-        except: pass
+                json.dump(existing, f, indent=4)
+        except Exception:
+            pass
 
+    def add_to_history(self, word):
+        w = word.strip().lower()
+        if w in self.history:
+            self.history.remove(w)
+        self.history.insert(0, w)
+        self.history = self.history[:self.MAX_HISTORY]
+        self.save_config()
+
+    # --- Helpers ---
+    def _center(self, window, w, h):
+        x = (window.winfo_screenwidth() // 2) - (w // 2)
+        y = (window.winfo_screenheight() // 2) - (h // 2)
+        window.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _steal_focus(self, window):
+        if sys.platform != "win32":
+            return
+        try:
+            import ctypes
+            u32 = ctypes.windll.user32
+            k32 = ctypes.windll.kernel32
+            hwnd = int(window.frame(), 16)
+            fg = u32.GetForegroundWindow()
+            if hwnd == fg:
+                return
+            app_t = k32.GetCurrentThreadId()
+            fg_t = u32.GetWindowThreadProcessId(fg, None)
+            if fg_t != app_t and fg_t != 0:
+                u32.AttachThreadInput(app_t, fg_t, True)
+                u32.BringWindowToTop(hwnd)
+                u32.ShowWindow(hwnd, 5)
+                u32.SetForegroundWindow(hwnd)
+                u32.AttachThreadInput(app_t, fg_t, False)
+            else:
+                u32.BringWindowToTop(hwnd)
+                u32.ShowWindow(hwnd, 5)
+                u32.SetForegroundWindow(hwnd)
+        except Exception:
+            pass
+
+    def _show_window(self, window):
+        window.attributes("-topmost", True)
+        window.deiconify()
+        self._steal_focus(window)
+        window.lift()
+        window.focus_force()
+        window.after(200, lambda: window.attributes("-topmost", False))
+
+    # --- Input Window ---
     def setup_input_window(self):
-        self.input_window = Toplevel(self.root)
-        self.input_window.title(APP_NAME)
-        self.input_window.withdraw() 
-        self.input_window.resizable(False, False)
-        self.input_window.protocol("WM_DELETE_WINDOW", self.hide_input_window)
+        win = Toplevel(self.root)
+        win.title(APP_NAME)
+        win.withdraw()
+        win.resizable(False, False)
+        win.configure(bg=C['bg'])
+        win.protocol("WM_DELETE_WINDOW", self.hide_input_window)
+        self.input_window = win
 
-        window_width, window_height = 500, 140
-        x = int((self.input_window.winfo_screenwidth() / 2) - (window_width / 2))
-        y = int((self.input_window.winfo_screenheight() / 2) - (window_height / 2))
-        self.input_window.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        f = tk.Frame(win, bg=C['bg'])
+        f.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
 
-        self.input_label = Label(self.input_window, text="Enter word to look up:", font=self.app_font)
-        self.input_label.pack(pady=5)
-        
-        self.entry = Entry(self.input_window, width=30, font=self.app_font)
-        self.entry.pack(pady=5, padx=10)
+        self.input_label = Label(
+            f, text="Look up a word",
+            font=("Segoe UI", 22, "bold"), bg=C['bg'], fg=C['blue']
+        )
+        self.input_label.pack(pady=(0, 8))
+
+        ef = tk.Frame(f, bg=C['overlay'], highlightthickness=2,
+                      highlightbackground=C['overlay'], highlightcolor=C['blue'])
+        ef.pack(fill=tk.X, pady=(0, 3))
+
+        self.entry = Entry(
+            ef, font=self.app_font,
+            bg=C['surface'], fg=C['text'], insertbackground=C['text'],
+            selectbackground=C['blue'], selectforeground=C['bg'],
+            relief=tk.FLAT, bd=8
+        )
+        self.entry.pack(fill=tk.X)
+
+        self.status_label = Label(
+            f, text="", font=("Segoe UI", 10), bg=C['bg'], fg=C['subtext']
+        )
+        self.status_label.pack(pady=(2, 5))
+
+        # History section
+        self.history_frame = tk.Frame(f, bg=C['bg'])
+
+        hdr = tk.Frame(self.history_frame, bg=C['bg'])
+        hdr.pack(fill=tk.X)
+        Label(hdr, text="Recent searches", font=("Segoe UI", 10),
+              bg=C['bg'], fg=C['subtext']).pack(side=tk.LEFT)
+        clr = Label(hdr, text="Clear", font=("Segoe UI", 10, "underline"),
+                     bg=C['bg'], fg=C['overlay'], cursor="hand2")
+        clr.pack(side=tk.RIGHT)
+        clr.bind("<Button-1>", lambda e: self._clear_history())
+
+        self.history_listbox = tk.Listbox(
+            self.history_frame, font=("Segoe UI", 13),
+            bg=C['surface'], fg=C['text'], selectbackground=C['blue'],
+            selectforeground=C['bg'], relief=tk.FLAT, bd=4,
+            highlightthickness=0, activestyle='none', height=7, cursor="hand2"
+        )
+        self.history_listbox.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+        self.history_listbox.bind("<Double-Button-1>", self._on_history_select)
+        self.history_listbox.bind("<Return>", self._on_history_select)
 
         self.entry.bind("<Return>", self.start_lookup)
-        self.input_window.bind("<Escape>", lambda e: self.hide_input_window())
+        win.bind("<Escape>", lambda e: self.hide_input_window())
 
+        self._center(win, 520, 380)
+
+    def _refresh_history(self):
+        self.history_listbox.delete(0, tk.END)
+        for w in self.history[:10]:
+            self.history_listbox.insert(tk.END, f"  {w}")
+        if self.history:
+            self.history_frame.pack(fill=tk.BOTH, expand=True)
+            self._center(self.input_window, 520, 380)
+        else:
+            self.history_frame.pack_forget()
+            self._center(self.input_window, 520, 160)
+
+    def _clear_history(self):
+        self.history = []
+        self.save_config()
+        self._refresh_history()
+
+    def _on_history_select(self, event=None):
+        sel = self.history_listbox.curselection()
+        if sel:
+            word = self.history_listbox.get(sel[0]).strip()
+            self.entry.delete(0, tk.END)
+            self.entry.insert(0, word)
+            self.start_lookup()
+
+    # --- Result Window ---
     def setup_result_window(self):
-        self.result_window = Toplevel(self.root)
-        self.result_window.title("Results")
-        self.result_window.withdraw()
-        self.result_window.protocol("WM_DELETE_WINDOW", self.hide_result_window)
+        win = Toplevel(self.root)
+        win.title("Results")
+        win.withdraw()
+        win.configure(bg=C['bg'])
+        win.protocol("WM_DELETE_WINDOW", self.hide_result_window)
+        self.result_window = win
 
-        # Using Tkinter's native word wrapping purely (wrap=tk.WORD)
-        self.result_text_widget = scrolledtext.ScrolledText(self.result_window, wrap=tk.WORD, width=60, height=15, font=self.app_font)
-        self.result_text_widget.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
-        
-        self.result_text_widget.bind("<Control-MouseWheel>", self.zoom_text)
-        self.result_text_widget.bind("<Control-Button-4>", lambda e: self.zoom_text(e, 1))
-        self.result_text_widget.bind("<Control-Button-5>", lambda e: self.zoom_text(e, -1))
-        self.result_window.bind("<Escape>", lambda e: self.hide_result_window())
+        self.result_text = scrolledtext.ScrolledText(
+            win, wrap=tk.WORD, font=self.app_font,
+            bg=C['bg'], fg=C['text'], insertbackground=C['text'],
+            selectbackground=C['blue'], selectforeground=C['bg'],
+            relief=tk.FLAT, bd=0, padx=20, pady=15, highlightthickness=0,
+        )
+        self.result_text.pack(fill=tk.BOTH, expand=True)
+        self._setup_tags()
 
-        zoom_frame = tk.Frame(self.result_window, bg="#ddd")
-        zoom_frame.place(relx=1.0, rely=0.0, anchor="ne", x=-25, y=10)
-        Button(zoom_frame, text="+", font=("Arial", 12, "bold"), width=2, command=lambda: self.zoom_text(direction=1)).pack(side=tk.LEFT, padx=1)
-        Button(zoom_frame, text="-", font=("Arial", 12, "bold"), width=2, command=lambda: self.zoom_text(direction=-1)).pack(side=tk.LEFT, padx=1)
+        # Bottom toolbar
+        bar = tk.Frame(win, bg=C['surface'], height=45)
+        bar.pack(fill=tk.X, side=tk.BOTTOM)
+        bar.pack_propagate(False)
 
-        win_w, win_h = 800, 500
-        x = (self.result_window.winfo_screenwidth() // 2) - (win_w // 2)
-        y = (self.result_window.winfo_screenheight() // 2) - (win_h // 2)
-        self.result_window.geometry(f"{win_w}x{win_h}+{x}+{y}")
+        bs = dict(
+            font=("Segoe UI", 11), relief=tk.FLAT, bd=0, cursor="hand2",
+            bg=C['surface'], fg=C['text'],
+            activebackground=C['overlay'], activeforeground=C['text'],
+            padx=12, pady=6,
+        )
+        Button(bar, text="\U0001F50D Search Again", command=self._search_again, **bs).pack(
+            side=tk.LEFT, padx=(10, 5), pady=6)
+        self.copy_btn = Button(bar, text="\U0001F4CB Copy", command=self._copy, **bs)
+        self.copy_btn.pack(side=tk.LEFT, padx=5, pady=6)
 
-    def steal_windows_focus(self, window):
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                user32 = ctypes.windll.user32
-                kernel32 = ctypes.windll.kernel32
+        self.zoom_label = Label(bar, text="100%", font=("Segoe UI", 10),
+                                bg=C['surface'], fg=C['subtext'])
+        self.zoom_label.pack(side=tk.RIGHT, padx=(0, 10))
+        zbs = {**bs, 'font': ("Segoe UI", 13, "bold")}
+        Button(bar, text="\u2212", width=3, command=lambda: self._zoom(d=-1), **zbs).pack(
+            side=tk.RIGHT, padx=2, pady=6)
+        Button(bar, text="+", width=3, command=lambda: self._zoom(d=1), **zbs).pack(
+            side=tk.RIGHT, padx=2, pady=6)
 
-                hwnd = int(window.frame(), 16)
-                fg_hwnd = user32.GetForegroundWindow()
-                
-                if hwnd == fg_hwnd:
-                    return
+        self.result_text.bind("<Control-MouseWheel>", self._zoom)
+        self.result_text.bind("<Control-Button-4>", lambda e: self._zoom(d=1))
+        self.result_text.bind("<Control-Button-5>", lambda e: self._zoom(d=-1))
+        win.bind("<Escape>", lambda e: self.hide_result_window())
+        win.bind("<Control-n>", lambda e: self._search_again())
 
-                app_thread = kernel32.GetCurrentThreadId()
-                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+        self._center(win, 850, 550)
 
-                if fg_thread != app_thread and fg_thread != 0:
-                    user32.AttachThreadInput(app_thread, fg_thread, True)
-                    user32.BringWindowToTop(hwnd)
-                    user32.ShowWindow(hwnd, 5) # SW_SHOW
-                    user32.SetForegroundWindow(hwnd)
-                    user32.AttachThreadInput(app_thread, fg_thread, False)
-                else:
-                    user32.BringWindowToTop(hwnd)
-                    user32.ShowWindow(hwnd, 5)
-                    user32.SetForegroundWindow(hwnd)
-            except Exception as e:
-                print(f"Focus steal failed: {e}")
+    def _setup_tags(self):
+        t = self.result_text
+        sz = self.base_font_size
+        t.tag_configure("title",    font=("Segoe UI", 26, "bold"), foreground=C['blue'], spacing3=2)
+        t.tag_configure("ipa",      font=("Segoe UI", 15), foreground=C['subtext'])
+        t.tag_configure("arabic",   font=("Segoe UI", 18), foreground=C['gold'], justify='center', spacing1=8, spacing3=8)
+        t.tag_configure("pos",      font=("Segoe UI", 13, "bold"), foreground=C['mauve'], spacing1=10, spacing3=4)
+        t.tag_configure("defnum",   font=("Segoe UI", sz), foreground=C['subtext'])
+        t.tag_configure("defn",     font=("Segoe UI", sz), foreground=C['text'], lmargin1=25, lmargin2=25)
+        t.tag_configure("eg_inline", font=("Segoe UI", sz-2, "italic"), foreground=C['subtext'], lmargin1=40, lmargin2=40)
+        t.tag_configure("sec",      font=("Segoe UI", 12, "bold"), foreground=C['teal'], spacing1=8, spacing3=4)
+        t.tag_configure("syn",      font=("Segoe UI", 13), foreground=C['green'], lmargin1=25, lmargin2=25)
+        t.tag_configure("ant",      font=("Segoe UI", 13), foreground=C['peach'], lmargin1=25, lmargin2=25)
+        t.tag_configure("longdef",  font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=10, lmargin2=10)
+        t.tag_configure("ctx",      font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=25, lmargin2=25, spacing1=3, spacing3=3)
+        t.tag_configure("bullet",   font=("Segoe UI", sz-1), foreground=C['teal'])
+        t.tag_configure("div",      foreground=C['overlay'], font=("Segoe UI", 6), spacing1=8, spacing3=8, justify='center')
+        t.tag_configure("err",      font=("Segoe UI", sz), foreground=C['red'], spacing1=10)
+        t.tag_configure("nores",    font=("Segoe UI", sz), foreground=C['subtext'], justify='center', spacing1=20)
 
+    # --- Window management ---
     def show_input_window(self):
-        self.hide_result_window() 
-        self.input_label.config(text="Enter word to look up:")
+        self.hide_result_window()
+        self._loading = False
+        self.input_label.config(text="Look up a word", fg=C['blue'])
+        self.status_label.config(text="Press Enter to search", fg=C['subtext'])
         self.entry.config(state=tk.NORMAL)
         self.entry.delete(0, tk.END)
-        
-        # Force Topmost briefly to snap above all full-screen applications
-        self.input_window.attributes("-topmost", True)
-        self.input_window.deiconify()
-        
-        self.steal_windows_focus(self.input_window)
-        
-        self.input_window.lift()
-        self.input_window.focus_force() 
-        
-        self.input_window.after(50, self._force_entry_focus)
-        
-        # Turn off Topmost after 200ms so the user can Alt+Tab away from it normally!
-        self.input_window.after(200, lambda: self.input_window.attributes("-topmost", False))
+        self._refresh_history()
+        self._show_window(self.input_window)
+        self.input_window.after(50, lambda: (self.entry.focus_force(), self.entry.focus_set()))
 
-    def _force_entry_focus(self):
-        self.entry.focus_force()
-        self.entry.focus_set()
+    def clipboard_lookup(self):
+        """Grab clipboard text and look it up."""
+        try:
+            text = self.root.clipboard_get().strip()
+            if text and len(text.split()) <= 3:
+                self.hide_result_window()
+                self._loading = False
+                self.entry.config(state=tk.NORMAL)
+                self.entry.delete(0, tk.END)
+                self.entry.insert(0, text)
+                self._refresh_history()
+                self._show_window(self.input_window)
+                self.input_window.after(100, self.start_lookup)
+                return
+        except tk.TclError:
+            pass
+        self.root.after(0, self.show_input_window)
 
     def hide_input_window(self):
+        self._loading = False
         self.input_window.withdraw()
 
     def hide_result_window(self):
         self.result_window.withdraw()
 
+    def _search_again(self):
+        self.hide_result_window()
+        self.show_input_window()
+
+    # --- Lookup ---
     def start_lookup(self, event=None):
         word = self.entry.get().strip()
-        if not word: return
-        
+        if not word:
+            return
         self.entry.config(state=tk.DISABLED)
-        self.input_label.config(text=f"Searching for '{word}'...")
-        self.input_window.update()
+        self._loading = True
+        self.status_label.config(text="")
+        self._animate(word, 0)
+        threading.Thread(target=self._run_lookup, args=(word,), daemon=True).start()
 
-        threading.Thread(target=self.run_lookup, args=(word,), daemon=True).start()
+    def _animate(self, word, n):
+        if not self._loading:
+            return
+        dots = "\u00b7" * ((n % 3) + 1) + " " * (2 - n % 3)
+        self.input_label.config(text=f"Searching {dots}", fg=C['lavender'])
+        self.status_label.config(text=word, fg=C['subtext'])
+        self.input_window.after(350, lambda: self._animate(word, n + 1))
 
-    def run_lookup(self, word):
+    def _run_lookup(self, word):
+        cached = self.cache.get(word.lower())
+        if cached is not None:
+            self.root.after(0, lambda: self._on_result(word, cached))
+            return
+        if not check_connectivity():
+            self.root.after(0, lambda: self._show_error("No internet connection."))
+            return
         try:
             data = get_word_data(word)
         except Exception as e:
-            self.root.after(0, lambda: self.show_error(f"An unexpected error occurred: {e}"))
+            self.root.after(0, lambda: self._show_error(f"Unexpected error: {e}"))
             return
-
         if isinstance(data, dict) and data.get('network_error'):
-            self.root.after(0, lambda: self.show_error(f"Network error: {data.get('error')}"))
+            self.root.after(0, lambda: self._show_error(data.get('error', 'Network error')))
             return
-
         if data is None:
-            self.root.after(0, lambda: self.show_error(f"No results found for '{word}'."))
+            self.root.after(0, lambda: self._show_error(f"No results found for '{word}'."))
             return
+        self.cache[word.lower()] = data
+        self.root.after(0, lambda: self._on_result(word, data))
 
-        formatted = format_data_for_display(word, data)
-        self.root.after(0, lambda: self.display_results(formatted, f"Results for '{word}'"))
+    def _on_result(self, word, data):
+        self._loading = False
+        self.add_to_history(word)
+        self._display(word, data)
 
-    def show_error(self, message):
+    # --- Inline error ---
+    def _show_error(self, msg):
+        self._loading = False
         self.hide_input_window()
-        messagebox.showerror("Lookup Error", message)
+        self.result_window.title("Lookup Error")
+        t = self.result_text
+        t.config(state=tk.NORMAL)
+        t.delete(1.0, tk.END)
+        t.insert(tk.END, "\n\u26A0  " + msg + "\n", "err")
+        t.config(state=tk.DISABLED)
+        self._show_window(self.result_window)
 
-    def display_results(self, content, title):
+    # --- Rich display ---
+    def _display(self, word, data):
         self.hide_input_window()
-        
-        self.result_window.title(title)
-        self.result_text_widget.config(state=tk.NORMAL)
-        self.result_text_widget.delete(1.0, tk.END)
-        self.result_text_widget.insert(tk.INSERT, content)
-        self.result_text_widget.config(state=tk.DISABLED)
-        
-        # Force Topmost briefly
-        self.result_window.attributes("-topmost", True)
-        self.result_window.deiconify()
-        
-        self.steal_windows_focus(self.result_window)
-        self.result_window.lift()
-        self.result_window.focus_force()
-        
-        # Turn off Topmost after 200ms so Alt+Tab works!
-        self.result_window.after(200, lambda: self.result_window.attributes("-topmost", False))
+        self.result_window.title(f"def \u2014 {word}")
+        t = self.result_text
+        t.config(state=tk.NORMAL)
+        t.delete(1.0, tk.END)
 
-    def zoom_text(self, event=None, direction=0):
-        if event:
-            if event.delta: direction = 1 if event.delta > 0 else -1
-            elif event.num == 4: direction = 1
-            elif event.num == 5: direction = -1
-        new_size = max(8, min(72, self.app_font.cget("size") + (direction * 2)))
-        self.app_font.configure(size=new_size)
+        # Title + IPA
+        t.insert(tk.END, word, "title")
+        if data.get('phonetic'):
+            t.insert(tk.END, f"  {data['phonetic']}", "ipa")
+        t.insert(tk.END, "\n")
+        t.insert(tk.END, "\u2501" * 60 + "\n", "div")
 
+        # Arabic
+        if data.get('ar_words'):
+            ar = "  \u00b7  ".join(data['ar_words'][:6])
+            t.insert(tk.END, get_display(arabic_reshaper.reshape(ar)) + "\n", "arabic")
+            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+
+        # Meanings
+        if data.get('meanings'):
+            for m in data['meanings']:
+                if m.get('pos'):
+                    t.insert(tk.END, f"  {m['pos'].upper()}\n", "pos")
+                for i, d in enumerate(m.get('definitions', []), 1):
+                    t.insert(tk.END, f"  {i}. ", "defnum")
+                    t.insert(tk.END, d['text'] + "\n", "defn")
+                    if d.get('example'):
+                        t.insert(tk.END, f'     \"{d["example"]}\"\n', "eg_inline")
+                if m.get('synonyms'):
+                    t.insert(tk.END, "  Synonyms: ", "sec")
+                    t.insert(tk.END, ", ".join(m['synonyms']) + "\n", "syn")
+                if m.get('antonyms'):
+                    t.insert(tk.END, "  Antonyms: ", "sec")
+                    t.insert(tk.END, ", ".join(m['antonyms']) + "\n", "ant")
+                t.insert(tk.END, "\n")
+        elif data.get('short_def'):
+            t.insert(tk.END, data['short_def'] + "\n\n", "defn")
+
+        # Long def
+        if data.get('long_def'):
+            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+            t.insert(tk.END, "  VOCABULARY.COM\n", "pos")
+            t.insert(tk.END, data['long_def'] + "\n", "longdef")
+
+        # Context examples
+        if data.get('eng_examples'):
+            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+            t.insert(tk.END, "  EXAMPLES IN CONTEXT\n", "pos")
+            for s in data['eng_examples'][:4]:
+                t.insert(tk.END, "  \u2022 ", "bullet")
+                t.insert(tk.END, s + "\n\n", "ctx")
+
+        t.config(state=tk.DISABLED)
+        self._show_window(self.result_window)
+
+    # --- Copy ---
+    def _copy(self):
+        try:
+            txt = self.result_text.get(1.0, tk.END).strip()
+            self.root.clipboard_clear()
+            self.root.clipboard_append(txt)
+            self.copy_btn.config(text="\u2713 Copied!")
+            self.result_window.after(1500, lambda: self.copy_btn.config(text="\U0001F4CB Copy"))
+        except Exception:
+            pass
+
+    # --- Zoom ---
+    def _zoom(self, event=None, d=0):
+        if event and hasattr(event, 'delta') and event.delta:
+            d = 1 if event.delta > 0 else -1
+        new = max(8, min(72, self.app_font.cget("size") + d * 2))
+        self.app_font.configure(size=new)
+        self.zoom_label.config(text=f"{int(new / self.base_font_size * 100)}%")
+
+    # --- Tray icon ---
     def create_tray_icon(self):
         img = Image.new('RGB', (64, 64), color=(30, 144, 255))
         try:
             draw = ImageDraw.Draw(img)
-            draw.text((15, 10), "W", fill=(255, 255, 255), font=ImageFont.truetype("arial.ttf", 40))
-        except: pass
-
-        for icon_name in ["app.png", "tray_icon.png", "app.ico"]:
+            draw.text((15, 10), "W", fill=(255, 255, 255),
+                      font=ImageFont.truetype("arial.ttf", 40))
+        except Exception:
+            pass
+        for name in ["app.png", "tray_icon.png", "app.ico"]:
             try:
-                path = resource_path(icon_name)
-                if os.path.exists(path):
-                    img = Image.open(path)
+                p = resource_path(name)
+                if os.path.exists(p):
+                    img = Image.open(p)
                     break
-            except: pass
-
+            except Exception:
+                pass
         menu = pystray.Menu(
             pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window)),
-            pystray.MenuItem('Customize Shortcut', lambda: self.root.after(0, self.open_shortcut_window)),
-            pystray.MenuItem('Exit', self.on_tray_exit)
+            pystray.MenuItem('Customize Shortcuts', lambda: self.root.after(0, self._open_shortcut_win)),
+            pystray.MenuItem('Exit', self._tray_exit),
         )
         self.tray_icon = pystray.Icon(APP_NAME, img, APP_NAME, menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
-    def open_shortcut_window(self):
+    # --- Shortcut customization ---
+    def _open_shortcut_win(self):
         win = Toplevel(self.root)
-        win.title("Customize Shortcut")
-        
-        win.attributes("-topmost", True)
-        self.steal_windows_focus(win)
-        win.focus_force()
-        win.after(200, lambda: win.attributes("-topmost", False))
+        win.title("Customize Shortcuts")
+        win.configure(bg=C['bg'])
+        win.resizable(False, False)
+        self._center(win, 420, 320)
 
-        var = tk.StringVar(value=self.hotkey)
-        Label(win, text=f"Current: {self.hotkey}", font=("Arial", 12, "bold")).pack(pady=(10, 0))
-        Label(win, text="Press new combination:").pack(pady=5)
-        
-        entry = Entry(win, textvariable=var, width=30, justify='center', font=("Arial", 12))
-        entry.pack(pady=5, padx=20)
+        ls = dict(font=("Segoe UI", 12), bg=C['bg'], fg=C['text'])
+        es = dict(
+            font=("Segoe UI", 13), justify='center',
+            bg=C['surface'], fg=C['text'], insertbackground=C['text'],
+            selectbackground=C['blue'], selectforeground=C['bg'],
+            relief=tk.FLAT, bd=6,
+        )
 
-        def on_key(e):
-            mods = []
-            if e.state & 0x0004: mods.append('<ctrl>')
-            if e.state & 0x20000: mods.append('<alt>')
-            if e.state & 0x0001: mods.append('<shift>')
-            key = e.keysym.lower()
-            if key not in ['control_l', 'control_r', 'alt_l', 'alt_r', 'shift_l', 'shift_r']:
-                var.set("+".join(sorted(set(mods)) + [f'<{key}>' if len(key)>1 else key]))
-            return "break"
+        Label(win, text="Search Hotkey", font=("Segoe UI", 14, "bold"),
+              bg=C['bg'], fg=C['blue']).pack(pady=(15, 2))
+        Label(win, text=f"Current: {self.hotkey}", **ls).pack()
+        v1 = tk.StringVar(value=self.hotkey)
+        e1 = Entry(win, textvariable=v1, width=28, **es)
+        e1.pack(pady=5, padx=20)
 
-        entry.bind("<KeyPress>", on_key)
-        
+        Label(win, text="Clipboard Lookup Hotkey", font=("Segoe UI", 14, "bold"),
+              bg=C['bg'], fg=C['blue']).pack(pady=(15, 2))
+        Label(win, text=f"Current: {self.clip_hotkey}", **ls).pack()
+        v2 = tk.StringVar(value=self.clip_hotkey)
+        e2 = Entry(win, textvariable=v2, width=28, **es)
+        e2.pack(pady=5, padx=20)
+
+        def on_key(var):
+            def handler(e):
+                mods = []
+                if e.state & 0x0004: mods.append('<ctrl>')
+                if e.state & 0x20000: mods.append('<alt>')
+                if e.state & 0x0001: mods.append('<shift>')
+                key = e.keysym.lower()
+                if key not in ('control_l', 'control_r', 'alt_l', 'alt_r', 'shift_l', 'shift_r'):
+                    var.set("+".join(sorted(set(mods)) + [f'<{key}>' if len(key) > 1 else key]))
+                return "break"
+            return handler
+
+        e1.bind("<KeyPress>", on_key(v1))
+        e2.bind("<KeyPress>", on_key(v2))
+
         def save():
-            if '+' in var.get():
-                self.restart_hotkey_listener(var.get())
+            if '+' in v1.get() and '+' in v2.get():
+                self.clip_hotkey = v2.get()
+                self.restart_hotkey_listener(v1.get())
                 win.destroy()
-                messagebox.showinfo("Success", f"Shortcut changed to {var.get()}")
 
-        tk.Button(win, text="Save", command=save).pack(pady=10)
-        entry.focus_set()
+        Button(
+            win, text="Save", font=("Segoe UI", 12, "bold"),
+            bg=C['blue'], fg=C['bg'], activebackground=C['lavender'],
+            activeforeground=C['bg'], relief=tk.FLAT, bd=0,
+            padx=20, pady=6, cursor="hand2", command=save,
+        ).pack(pady=15)
 
-    def on_tray_exit(self):
+        self._show_window(win)
+        e1.focus_set()
+
+    def _tray_exit(self):
         self.root.after(0, self.on_close)
 
     def on_close(self):
-        if self.tray_icon: self.tray_icon.stop()
-        if self.hotkey_listener: self.hotkey_listener.stop()
+        if self.tray_icon:
+            self.tray_icon.stop()
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
         self.root.destroy()
 
+    # --- Hotkey management ---
     def start_hotkey_listener(self, hotkey_string):
         def on_activate():
             self.root.after(0, self.show_input_window)
+
+        def on_clip():
+            self.root.after(0, self.clipboard_lookup)
+
         try:
-            self.hotkey_listener = keyboard.GlobalHotKeys({hotkey_string: on_activate})
+            hotkeys = {hotkey_string: on_activate}
+            if self.clip_hotkey:
+                hotkeys[self.clip_hotkey] = on_clip
+            self.hotkey_listener = keyboard.GlobalHotKeys(hotkeys)
             self.hotkey_listener.run()
         except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Hotkey Error", f"Failed to register '{hotkey_string}'. Error: {e}"))
-    
+            self.root.after(0, lambda: self._show_error(
+                f"Failed to register hotkey '{hotkey_string}': {e}"))
+
     def restart_hotkey_listener(self, new_hotkey):
         self.hotkey = new_hotkey
         self.save_config()
-        if self.hotkey_listener: self.hotkey_listener.stop()
-        threading.Thread(target=self.start_hotkey_listener, args=(self.hotkey,), daemon=True).start()
+        if self.hotkey_listener:
+            self.hotkey_listener.stop()
+        threading.Thread(target=self.start_hotkey_listener, args=(self.hotkey,),
+                         daemon=True).start()
+
 
 def main():
     setup_auto_start()
@@ -452,6 +760,7 @@ def main():
     app.restart_hotkey_listener(app.hotkey)
     app.create_tray_icon()
     root.mainloop()
+
 
 if __name__ == '__main__':
     main()
