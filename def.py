@@ -1,6 +1,6 @@
 """
 Word Lookup App — show input window with Ctrl+Alt+W.
-Highly Optimized for Reliability and Instant Window Focus.
+Highly Optimized for Reliability, Instant Window Focus, and Dynamic Text Wrapping.
 """
 import sys
 import threading
@@ -10,7 +10,6 @@ from tkinter import scrolledtext, Toplevel, Entry, Label, messagebox, Button
 from pynput import keyboard
 import cloudscraper
 from bs4 import BeautifulSoup
-import textwrap
 import arabic_reshaper
 from bidi.algorithm import get_display
 import pystray
@@ -20,7 +19,7 @@ import socket
 import os
 import json
 
-# Application display/config name (string "def").
+# Application display/config name
 APP_NAME = "def"
 
 def resource_path(relative_path):
@@ -69,13 +68,6 @@ def setup_auto_start():
             config["startup_configured"] = True
             with open(config_path, 'w') as f: json.dump(config, f, indent=4)
         except: pass
-
-# --- Configuration ---
-SPACE = 2
-WRAP_WIDTH = 70
-
-def wrap_string(string, width):
-    return textwrap.wrap(string, width=width) if string else []
 
 # --- Data fetcher ---
 def get_word_data(word):
@@ -145,27 +137,27 @@ def format_data_for_display(search_word, data):
     if data.get('ar_words'):
         ar_words_str = " | ".join(data['ar_words'][:5])
         bidi_text = get_display(arabic_reshaper.reshape(ar_words_str))
-        output_lines.append("  " + bidi_text)
+        output_lines.append(bidi_text)
     else:
-        output_lines.append("  No Arabic translations found.")
+        output_lines.append("No Arabic translations found.")
 
     output_lines.append(divider)
     if data.get('short_def'):
-        for line in wrap_string(data['short_def'], WRAP_WIDTH): output_lines.append("  " + line)
+        output_lines.append(data['short_def'])
     else:
-        output_lines.append("  No short definition found.")
+        output_lines.append("No short definition found.")
 
     if data.get('long_def'):
         output_lines.append(divider)
-        for line in wrap_string(data['long_def'], WRAP_WIDTH): output_lines.append("  " + line)
+        output_lines.append(data['long_def'])
 
     output_lines.append(divider)
     if data.get('eng_examples'):
         for sentence in data['eng_examples'][:3]:  # Limit to 3 examples
-            for line in wrap_string(sentence, WRAP_WIDTH): output_lines.append("  " + line)
-            output_lines.append("")
+            output_lines.append("• " + sentence)
+            output_lines.append("") # Adds a blank line between examples
     else:
-        output_lines.append("  No English examples found.")
+        output_lines.append("No English examples found.")
 
     output_lines.append(divider)
     return "\n".join(output_lines)
@@ -206,11 +198,9 @@ class WordLookupApp:
         except: pass
 
     def setup_input_window(self):
-        """Create the input window once and keep it in memory."""
         self.input_window = Toplevel(self.root)
         self.input_window.title(APP_NAME)
-        self.input_window.withdraw() # Hide initially
-        self.input_window.attributes("-topmost", True)
+        self.input_window.withdraw() 
         self.input_window.resizable(False, False)
         self.input_window.protocol("WM_DELETE_WINDOW", self.hide_input_window)
 
@@ -229,15 +219,14 @@ class WordLookupApp:
         self.input_window.bind("<Escape>", lambda e: self.hide_input_window())
 
     def setup_result_window(self):
-        """Create the result window once and keep it in memory."""
         self.result_window = Toplevel(self.root)
         self.result_window.title("Results")
         self.result_window.withdraw()
-        self.result_window.attributes("-topmost", True)
         self.result_window.protocol("WM_DELETE_WINDOW", self.hide_result_window)
 
+        # Using Tkinter's native word wrapping purely (wrap=tk.WORD)
         self.result_text_widget = scrolledtext.ScrolledText(self.result_window, wrap=tk.WORD, width=60, height=15, font=self.app_font)
-        self.result_text_widget.pack(padx=10, pady=10, fill=tk.BOTH, expand=True)
+        self.result_text_widget.pack(padx=20, pady=20, fill=tk.BOTH, expand=True)
         
         self.result_text_widget.bind("<Control-MouseWheel>", self.zoom_text)
         self.result_text_widget.bind("<Control-Button-4>", lambda e: self.zoom_text(e, 1))
@@ -255,33 +244,57 @@ class WordLookupApp:
         self.result_window.geometry(f"{win_w}x{win_h}+{x}+{y}")
 
     def steal_windows_focus(self, window):
-        """HACK: Bypasses Windows Foreground Lock Timeout (The Orange Flashing Icon Fix)"""
         if sys.platform == "win32":
             try:
                 import ctypes
-                # Simulate pressing the ALT key to trick Windows into allowing focus steal
-                ctypes.windll.user32.keybd_event(0x12, 0, 0, 0) # Alt Down
-                ctypes.windll.user32.keybd_event(0x12, 0, 2, 0) # Alt Up
-                # Force window to foreground
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+
                 hwnd = int(window.frame(), 16)
-                ctypes.windll.user32.SetForegroundWindow(hwnd)
+                fg_hwnd = user32.GetForegroundWindow()
+                
+                if hwnd == fg_hwnd:
+                    return
+
+                app_thread = kernel32.GetCurrentThreadId()
+                fg_thread = user32.GetWindowThreadProcessId(fg_hwnd, None)
+
+                if fg_thread != app_thread and fg_thread != 0:
+                    user32.AttachThreadInput(app_thread, fg_thread, True)
+                    user32.BringWindowToTop(hwnd)
+                    user32.ShowWindow(hwnd, 5) # SW_SHOW
+                    user32.SetForegroundWindow(hwnd)
+                    user32.AttachThreadInput(app_thread, fg_thread, False)
+                else:
+                    user32.BringWindowToTop(hwnd)
+                    user32.ShowWindow(hwnd, 5)
+                    user32.SetForegroundWindow(hwnd)
             except Exception as e:
                 print(f"Focus steal failed: {e}")
 
     def show_input_window(self):
-        self.hide_result_window() # Close results if open
+        self.hide_result_window() 
         self.input_label.config(text="Enter word to look up:")
         self.entry.config(state=tk.NORMAL)
         self.entry.delete(0, tk.END)
         
-        self.input_window.deiconify()
+        # Force Topmost briefly to snap above all full-screen applications
         self.input_window.attributes("-topmost", True)
+        self.input_window.deiconify()
         
-        # Apply Focus Fix
         self.steal_windows_focus(self.input_window)
         
         self.input_window.lift()
+        self.input_window.focus_force() 
+        
+        self.input_window.after(50, self._force_entry_focus)
+        
+        # Turn off Topmost after 200ms so the user can Alt+Tab away from it normally!
+        self.input_window.after(200, lambda: self.input_window.attributes("-topmost", False))
+
+    def _force_entry_focus(self):
         self.entry.focus_force()
+        self.entry.focus_set()
 
     def hide_input_window(self):
         self.input_window.withdraw()
@@ -293,7 +306,6 @@ class WordLookupApp:
         word = self.entry.get().strip()
         if not word: return
         
-        # Show a loading state instead of instantly vanishing
         self.entry.config(state=tk.DISABLED)
         self.input_label.config(text=f"Searching for '{word}'...")
         self.input_window.update()
@@ -323,7 +335,7 @@ class WordLookupApp:
         messagebox.showerror("Lookup Error", message)
 
     def display_results(self, content, title):
-        self.hide_input_window() # Hide input now that we have results
+        self.hide_input_window()
         
         self.result_window.title(title)
         self.result_text_widget.config(state=tk.NORMAL)
@@ -331,14 +343,16 @@ class WordLookupApp:
         self.result_text_widget.insert(tk.INSERT, content)
         self.result_text_widget.config(state=tk.DISABLED)
         
-        self.result_window.deiconify()
+        # Force Topmost briefly
         self.result_window.attributes("-topmost", True)
+        self.result_window.deiconify()
         
-        # Apply Focus Fix to Results Window
         self.steal_windows_focus(self.result_window)
-        
         self.result_window.lift()
         self.result_window.focus_force()
+        
+        # Turn off Topmost after 200ms so Alt+Tab works!
+        self.result_window.after(200, lambda: self.result_window.attributes("-topmost", False))
 
     def zoom_text(self, event=None, direction=0):
         if event:
@@ -374,9 +388,11 @@ class WordLookupApp:
     def open_shortcut_window(self):
         win = Toplevel(self.root)
         win.title("Customize Shortcut")
+        
         win.attributes("-topmost", True)
         self.steal_windows_focus(win)
         win.focus_force()
+        win.after(200, lambda: win.attributes("-topmost", False))
 
         var = tk.StringVar(value=self.hotkey)
         Label(win, text=f"Current: {self.hotkey}", font=("Arial", 12, "bold")).pack(pady=(10, 0))
