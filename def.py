@@ -394,14 +394,31 @@ class WordLookupApp:
         win.protocol("WM_DELETE_WINDOW", self.hide_result_window)
         self.result_window = win
 
+        # Container so we can overlay the smart-copy button
+        text_container = tk.Frame(win, bg=C['bg'])
+        text_container.pack(fill=tk.BOTH, expand=True)
+
         self.result_text = scrolledtext.ScrolledText(
-            win, wrap=tk.WORD, font=self.app_font,
+            text_container, wrap=tk.WORD, font=self.app_font,
             bg=C['bg'], fg=C['text'], insertbackground=C['text'],
             selectbackground=C['blue'], selectforeground=C['bg'],
             relief=tk.FLAT, bd=0, padx=20, pady=15, highlightthickness=0,
         )
         self.result_text.pack(fill=tk.BOTH, expand=True)
         self._setup_tags()
+
+        # Smart-copy button — top-right overlay
+        self._current_word = ""
+        self._current_data = {}
+        self.smart_copy_btn = tk.Button(
+            text_container, text="\U0001F4CB Copy",
+            font=("Segoe UI", 10, "bold"),
+            bg=C['surface'], fg=C['blue'],
+            activebackground=C['overlay'], activeforeground=C['blue'],
+            relief=tk.FLAT, bd=0, cursor="hand2", padx=10, pady=4,
+            command=self._copy_smart,
+        )
+        self.smart_copy_btn.place(relx=1.0, rely=0.0, anchor="ne", x=-8, y=8)
 
         # Bottom toolbar
         bar = tk.Frame(win, bg=C['surface'], height=45)
@@ -416,7 +433,7 @@ class WordLookupApp:
         )
         Button(bar, text="\U0001F50D Search Again", command=self._search_again, **bs).pack(
             side=tk.LEFT, padx=(10, 5), pady=6)
-        self.copy_btn = Button(bar, text="\U0001F4CB Copy", command=self._copy, **bs)
+        self.copy_btn = Button(bar, text="\U0001F4CB Copy All", command=self._copy, **bs)
         self.copy_btn.pack(side=tk.LEFT, padx=5, pady=6)
 
         self.zoom_label = Label(bar, text="100%", font=("Segoe UI", 10),
@@ -455,6 +472,7 @@ class WordLookupApp:
         t.tag_configure("div",      foreground=C['overlay'], font=("Segoe UI", 6), spacing1=8, spacing3=8, justify='center')
         t.tag_configure("err",      font=("Segoe UI", sz), foreground=C['red'], spacing1=10)
         t.tag_configure("nores",    font=("Segoe UI", sz), foreground=C['subtext'], lmargin1=25, spacing1=5)
+        t.tag_configure("highlight", underline=True)
 
     # --- Window management ---
     def show_input_window(self):
@@ -558,6 +576,8 @@ class WordLookupApp:
     # --- Rich display (Formatted in specific requested order) ---
     def _display(self, word, data):
         self.hide_input_window()
+        self._current_word = word
+        self._current_data = data
         self.result_window.title(f"def \u2014 {word}")
         t = self.result_text
         t.config(state=tk.NORMAL)
@@ -568,6 +588,8 @@ class WordLookupApp:
         if data.get('phonetic'):
             t.insert(tk.END, f"  {data['phonetic']}", "ipa")
         t.insert(tk.END, "\n")
+        # Mark end of title line — underline search starts AFTER this
+        title_end = t.index(tk.INSERT)
         t.insert(tk.END, "\u2501" * 60 + "\n", "div")
 
         # 2. Arabic Translations (from Reverso)
@@ -624,16 +646,58 @@ class WordLookupApp:
                     t.insert(tk.END, " \u2022 " + ", ".join(m['antonyms']) + "\n", "ant")
 
         t.config(state=tk.DISABLED)
+        # Underline every occurrence of the word after the title line
+        self._highlight_word(word, title_end)
         self._show_window(self.result_window)
+
+    def _highlight_word(self, word, start_index):
+        """Underline every case-insensitive occurrence of `word` starting after `start_index`."""
+        t = self.result_text
+        t.tag_remove("highlight", "1.0", tk.END)
+        if not word:
+            return
+        search_word = word.lower()
+        search_start = start_index
+        while True:
+            pos = t.search(search_word, search_start, tk.END, nocase=True)
+            if not pos:
+                break
+            end_pos = f"{pos}+{len(word)}c"
+            t.tag_add("highlight", pos, end_pos)
+            search_start = end_pos
 
     # --- Copy ---
     def _copy(self):
+        """Copy the full result text to clipboard."""
         try:
             txt = self.result_text.get(1.0, tk.END).strip()
             self.root.clipboard_clear()
             self.root.clipboard_append(txt)
             self.copy_btn.config(text="\u2713 Copied!")
-            self.result_window.after(1500, lambda: self.copy_btn.config(text="\U0001F4CB Copy"))
+            self.result_window.after(1500, lambda: self.copy_btn.config(text="\U0001F4CB Copy All"))
+        except Exception:
+            pass
+
+    def _copy_smart(self):
+        """Copy word + Arabic translations + two Vocabulary.com definitions."""
+        try:
+            word = self._current_word
+            data = self._current_data
+            lines = [word]
+            # Arabic translations
+            if data.get('ar_words'):
+                ar_list = data['ar_words'][:8]
+                lines.append("Arabic: " + " | ".join(ar_list))
+            # Two vocab.com definitions (short + long)
+            if data.get('short_def'):
+                lines.append("Def 1: " + data['short_def'])
+            if data.get('long_def'):
+                lines.append("Def 2: " + data['long_def'])
+            text = "\n".join(lines)
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.smart_copy_btn.config(text="\u2713 Copied!")
+            self.result_window.after(1500, lambda: self.smart_copy_btn.config(text="\U0001F4CB Copy"))
         except Exception:
             pass
 
