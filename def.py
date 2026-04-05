@@ -112,6 +112,7 @@ def get_word_data(word):
         'meanings': [], 'audio_url': None,
     }
     error_messages = []
+    api_fallback_short_def = None
 
     try:
         scraper = cloudscraper.create_scraper(
@@ -120,7 +121,7 @@ def get_word_data(word):
     except Exception as e:
         return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
 
-    # 1. Free Dictionary API — primary English source
+    # 1. Free Dictionary API — extracts phonetics, synonyms, and additional structured meanings
     try:
         api_resp = requests.get(
             f"https://api.dictionaryapi.dev/api/v2/entries/en/{word}", timeout=5
@@ -145,43 +146,44 @@ def get_word_data(word):
                         'example': d.get('example'),
                     })
                 results['meanings'].append(meaning)
-            if results['meanings']:
-                results['short_def'] = results['meanings'][0]['definitions'][0]['text']
+            # Save API definition just in case Vocab.com fails
+            if results['meanings'] and results['meanings'][0]['definitions']:
+                api_fallback_short_def = results['meanings'][0]['definitions'][0]['text']
     except Exception:
         pass
 
-    # 2. Vocabulary.com — better long definitions
+    # 2. Vocabulary.com — primary source for high-quality short/long definitions
     try:
         resp = scraper.get(f"https://www.vocabulary.com/dictionary/{word}", timeout=10)
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.content, 'html.parser')
             short_tag = soup.find('p', class_='short')
             long_tag = soup.find('p', class_='long')
-            if short_tag and not results['short_def']:
+            if short_tag:
                 results['short_def'] = " ".join(short_tag.stripped_strings)
             if long_tag:
                 results['long_def'] = " ".join(long_tag.stripped_strings)
     except Exception as e:
         error_messages.append(f"Vocab.com: {e}")
 
+    # Fallback: if Vocab.com had no short definition, use the API's definition
+    if not results['short_def'] and api_fallback_short_def:
+        results['short_def'] = api_fallback_short_def
+
     # 3. Reverso Context — Arabic translation + examples
     try:
-        resp = scraper.get(
-            f"https://context.reverso.net/translation/english-arabic/{word}",
-            headers={'User-Agent': 'Mozilla/5.0'}, timeout=10
-        )
-        if resp.status_code == 200:
-            soup = BeautifulSoup(resp.content, "html.parser")
-            results['ar_words'] = [
-                el.get_text(strip=True) for el in soup.select("span.display-term")
-                if el.get_text(strip=True)
-            ]
-            results['eng_examples'] = [
-                ' '.join(el.stripped_strings) for el in soup.select("div.example div.ltr span.text")
-                if el.get_text(strip=True)
-            ]
+        reverso_url = f"https://context.reverso.net/translation/english-arabic/{word}"
+        response_reverso = scraper.get(reverso_url, timeout=25)
+        response_reverso.raise_for_status()
+        soup_reverso = BeautifulSoup(response_reverso.content, "html.parser")
+        
+        ar_words_tags = soup_reverso.select("span.display-term")
+        eng_sents_tags = soup_reverso.select("div.example div.ltr span.text")
+        
+        results['ar_words'] = [el.get_text(strip=True) for el in ar_words_tags if el.get_text(strip=True)]
+        results['eng_examples'] = [' '.join(el.stripped_strings) for el in eng_sents_tags if el.get_text(strip=True)]
     except Exception as e:
-        error_messages.append(f"Reverso: {e}")
+        error_messages.append(f"Reverso Context: {e}")
 
     if error_messages and not (results['short_def'] or results['ar_words']):
         results['error'] = "\n".join(error_messages)
@@ -439,20 +441,20 @@ class WordLookupApp:
         sz = self.base_font_size
         t.tag_configure("title",    font=("Segoe UI", 26, "bold"), foreground=C['blue'], spacing3=2)
         t.tag_configure("ipa",      font=("Segoe UI", 15), foreground=C['subtext'])
-        t.tag_configure("arabic",   font=("Segoe UI", 18), foreground=C['gold'], justify='center', spacing1=8, spacing3=8)
+        t.tag_configure("arabic",   font=("Segoe UI", 18), foreground=C['gold'], justify='left', lmargin1=15, lmargin2=15, spacing1=4, spacing3=4)
         t.tag_configure("pos",      font=("Segoe UI", 13, "bold"), foreground=C['mauve'], spacing1=10, spacing3=4)
         t.tag_configure("defnum",   font=("Segoe UI", sz), foreground=C['subtext'])
         t.tag_configure("defn",     font=("Segoe UI", sz), foreground=C['text'], lmargin1=25, lmargin2=25)
         t.tag_configure("eg_inline", font=("Segoe UI", sz-2, "italic"), foreground=C['subtext'], lmargin1=40, lmargin2=40)
-        t.tag_configure("sec",      font=("Segoe UI", 12, "bold"), foreground=C['teal'], spacing1=8, spacing3=4)
-        t.tag_configure("syn",      font=("Segoe UI", 13), foreground=C['green'], lmargin1=25, lmargin2=25)
-        t.tag_configure("ant",      font=("Segoe UI", 13), foreground=C['peach'], lmargin1=25, lmargin2=25)
-        t.tag_configure("longdef",  font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=10, lmargin2=10)
-        t.tag_configure("ctx",      font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=25, lmargin2=25, spacing1=3, spacing3=3)
-        t.tag_configure("bullet",   font=("Segoe UI", sz-1), foreground=C['teal'])
+        t.tag_configure("sec",      font=("Segoe UI", 12, "bold"), foreground=C['teal'], spacing1=8, spacing3=4, lmargin1=25)
+        t.tag_configure("syn",      font=("Segoe UI", 13), foreground=C['green'], lmargin1=45, lmargin2=45)
+        t.tag_configure("ant",      font=("Segoe UI", 13), foreground=C['peach'], lmargin1=45, lmargin2=45)
+        t.tag_configure("longdef",  font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=25, lmargin2=25)
+        t.tag_configure("ctx",      font=("Segoe UI", sz-1), foreground=C['text'], lmargin1=40, lmargin2=40, spacing1=3, spacing3=3)
+        t.tag_configure("bullet",   font=("Segoe UI", sz-1), foreground=C['teal'], lmargin1=25)
         t.tag_configure("div",      foreground=C['overlay'], font=("Segoe UI", 6), spacing1=8, spacing3=8, justify='center')
         t.tag_configure("err",      font=("Segoe UI", sz), foreground=C['red'], spacing1=10)
-        t.tag_configure("nores",    font=("Segoe UI", sz), foreground=C['subtext'], justify='center', spacing1=20)
+        t.tag_configure("nores",    font=("Segoe UI", sz), foreground=C['subtext'], lmargin1=25, spacing1=5)
 
     # --- Window management ---
     def show_input_window(self):
@@ -553,7 +555,7 @@ class WordLookupApp:
         t.config(state=tk.DISABLED)
         self._show_window(self.result_window)
 
-    # --- Rich display ---
+    # --- Rich display (Formatted in specific requested order) ---
     def _display(self, word, data):
         self.hide_input_window()
         self.result_window.title(f"def \u2014 {word}")
@@ -561,52 +563,65 @@ class WordLookupApp:
         t.config(state=tk.NORMAL)
         t.delete(1.0, tk.END)
 
-        # Title + IPA
+        # 1. Title + Phonetic
         t.insert(tk.END, word, "title")
         if data.get('phonetic'):
             t.insert(tk.END, f"  {data['phonetic']}", "ipa")
         t.insert(tk.END, "\n")
         t.insert(tk.END, "\u2501" * 60 + "\n", "div")
 
-        # Arabic
+        # 2. Arabic Translations (from Reverso)
         if data.get('ar_words'):
-            ar = "  \u00b7  ".join(data['ar_words'][:6])
-            t.insert(tk.END, get_display(arabic_reshaper.reshape(ar)) + "\n", "arabic")
-            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+            for ar_word in data['ar_words'][:8]:
+                t.insert(tk.END, get_display(arabic_reshaper.reshape(ar_word)) + "   ", "arabic")
+            t.insert(tk.END, "\n")
+        else:
+            t.insert(tk.END, "No Arabic translations found.\n", "nores")
+        
+        t.insert(tk.END, "\u2501" * 60 + "\n", "div")
 
-        # Meanings
+        # 3. Short Definition (Prioritizes Vocab.com)
+        if data.get('short_def'):
+            t.insert(tk.END, data['short_def'] + "\n", "defn")
+        else:
+            t.insert(tk.END, "No short definition found.\n", "nores")
+
+        t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+
+        # 4. Long Definition (From Vocab.com)
+        if data.get('long_def'):
+            t.insert(tk.END, data['long_def'] + "\n", "longdef")
+        else:
+            t.insert(tk.END, "No long definition found.\n", "nores")
+
+        t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+
+        # 5. English Examples (from Reverso)
+        if data.get('eng_examples'):
+            for s in data['eng_examples'][:5]:
+                t.insert(tk.END, "\u2022 ", "bullet")
+                t.insert(tk.END, s + "\n\n", "ctx")
+        else:
+            t.insert(tk.END, "No English examples found.\n", "nores")
+
+        # 6. Additional Extracted Data (Grammar, Synonyms, Antonyms)
         if data.get('meanings'):
+            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
+            t.insert(tk.END, "  ADDITIONAL DETAILS\n", "pos")
             for m in data['meanings']:
                 if m.get('pos'):
-                    t.insert(tk.END, f"  {m['pos'].upper()}\n", "pos")
+                    t.insert(tk.END, f"\n  {m['pos'].upper()}\n", "pos")
                 for i, d in enumerate(m.get('definitions', []), 1):
                     t.insert(tk.END, f"  {i}. ", "defnum")
                     t.insert(tk.END, d['text'] + "\n", "defn")
                     if d.get('example'):
                         t.insert(tk.END, f'     \"{d["example"]}\"\n', "eg_inline")
                 if m.get('synonyms'):
-                    t.insert(tk.END, "  Synonyms: ", "sec")
-                    t.insert(tk.END, ", ".join(m['synonyms']) + "\n", "syn")
+                    t.insert(tk.END, "\n  Synonyms:\n", "sec")
+                    t.insert(tk.END, " \u2022 " + ", ".join(m['synonyms']) + "\n", "syn")
                 if m.get('antonyms'):
-                    t.insert(tk.END, "  Antonyms: ", "sec")
-                    t.insert(tk.END, ", ".join(m['antonyms']) + "\n", "ant")
-                t.insert(tk.END, "\n")
-        elif data.get('short_def'):
-            t.insert(tk.END, data['short_def'] + "\n\n", "defn")
-
-        # Long def
-        if data.get('long_def'):
-            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
-            t.insert(tk.END, "  VOCABULARY.COM\n", "pos")
-            t.insert(tk.END, data['long_def'] + "\n", "longdef")
-
-        # Context examples
-        if data.get('eng_examples'):
-            t.insert(tk.END, "\u2501" * 60 + "\n", "div")
-            t.insert(tk.END, "  EXAMPLES IN CONTEXT\n", "pos")
-            for s in data['eng_examples'][:4]:
-                t.insert(tk.END, "  \u2022 ", "bullet")
-                t.insert(tk.END, s + "\n\n", "ctx")
+                    t.insert(tk.END, "\n  Antonyms:\n", "sec")
+                    t.insert(tk.END, " \u2022 " + ", ".join(m['antonyms']) + "\n", "ant")
 
         t.config(state=tk.DISABLED)
         self._show_window(self.result_window)
