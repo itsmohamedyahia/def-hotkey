@@ -727,7 +727,7 @@ class WordLookupApp:
             except Exception:
                 pass
         menu = pystray.Menu(
-            pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window)),
+            pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window), default=True),
             pystray.MenuItem('Customize Shortcuts', lambda: self.root.after(0, self._open_shortcut_win)),
             pystray.MenuItem('Exit', self._tray_exit),
         )
