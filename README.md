@@ -1,6 +1,6 @@
 # def (Dictionary CLI)
 
-A high-speed, hotkey-driven command-line utility for medical professionals and students to quickly look up Arabic and English definitions and usage examples.
+A high-speed, hotkey-driven command-line utility for students to quickly look up Arabic and English definitions and usage examples from Reverso and Vocabulary.com.
 
 ## 🚀 Key Features
 - **Global Hotkey (Ctrl+Alt+W):** Instantly trigger a lookup window from any application.
