@@ -1,6 +1,6 @@
 <div align="center">
   <img src="app.png" alt="def icon" width="128">
-  <h1>def (Dictionary CLI)</h1>
+  <h1>def (Hotkey Dictionary)</h1>
   <p>A distraction-free, lightning-fast dictionary and translation tool.</p>
 </div>
 
