@@ -118,6 +118,7 @@ def get_word_data(word):
         scraper = cloudscraper.create_scraper(
             browser={'browser': 'chrome', 'platform': 'windows', 'mobile': False}, delay=10
         )
+        scraper.headers.update({'User-Agent': 'def-dictionary-cli/1.0 (Open Source Educational Tool)'})
     except Exception as e:
         return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
 
@@ -435,6 +436,11 @@ class WordLookupApp:
             side=tk.LEFT, padx=(10, 5), pady=6)
         self.copy_btn = Button(bar, text="\U0001F4CB Copy All", command=self._copy, **bs)
         self.copy_btn.pack(side=tk.LEFT, padx=5, pady=6)
+
+        # Credits Label
+        credits_lbl = Label(bar, text="Data: Vocabulary.com & Reverso", font=("Segoe UI", 8),
+                            bg=C['surface'], fg=C['subtext'])
+        credits_lbl.pack(side=tk.LEFT, expand=True)
 
         self.zoom_label = Label(bar, text="100%", font=("Segoe UI", 10),
                                 bg=C['surface'], fg=C['subtext'])
