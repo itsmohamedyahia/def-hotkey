@@ -1,7 +1,7 @@
 <div align="center">
   <img src="app.png" alt="def icon" width="128">
   <h1>def (Hotkey Dictionary)</h1>
-  <p>A distraction-free, lightning-fast dictionary and translation tool.</p>
+  <p>A distraction-free, fast dictionary and translation tool.</p>
 </div>
 
 ---
@@ -15,7 +15,7 @@ Instead of opening a browser, navigating to multiple cluttered websites, and typ
 ## ✨ Key Features
 
 - **Global Hotkey (`Ctrl+Alt+W`):** Instantly bring up the search window from any application.
-- **Clipboard Lookup (`Ctrl+Alt+D`):** Highlight a word, hit the shortcut, and immediately see the definition.
+- **Clipboard Lookup (`Ctrl+Alt+D`):** Highlight a word, hit the shortcut, and promptly see the definition.
 - **Top-Tier Definitions:** Retrieves high-quality, comprehensive English definitions and explanations from [Vocabulary.com](https://www.vocabulary.com/).
 - **Accurate Translations & Examples:** Fetches Arabic translations and real-world usage examples from [Reverso Context](https://context.reverso.net/).
 - **Smart Copy (`Ctrl+C`):** Instantly copy a formatted summary of the word, its translations, and definitions straight to your clipboard—perfect for note-taking.
