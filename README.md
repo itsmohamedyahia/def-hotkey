@@ -25,25 +25,27 @@ Instead of opening a browser, navigating to multiple cluttered websites, and typ
 
 To build the executable yourself using PyInstaller, follow these steps:
 
-1. **Activate your Virtual Environment** (if applicable):
+1. **Create a Virtual Environment:**
+   ```powershell
+   python -m venv .venv
+   ```
+
+2. **Activate the Virtual Environment:**
    ```powershell
    .\.venv\Scripts\Activate.ps1
    ```
    *Note: If you get an error saying "scripts is disabled on this system," run `Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process` first.*
 
-2. **Install Requirements:**
-   Make sure you install the necessary packages inside your environment:
+3. **Install Dependencies:**
    ```powershell
    pip install -r requirements.txt
-   pip install pyinstaller pynput
    ```
 
-3. **Build the Executable:**
-   Run the following PyInstaller command. 
-   *Note: On Windows, use a semicolon (`;`) inside the `--add-data` flag.*
+4. **Build the Executable:**
    ```powershell
-   python -m PyInstaller --clean --onefile --windowed --name "def" --icon="app.ico" --add-data="app.png;." --hidden-import="pynput.keyboard._win32" --hidden-import="pynput.mouse._win32" def.py
+   pyinstaller --clean def.spec
    ```
+   The output will be in the `dist/` directory.
 
 ## ⚠️ Disclaimer & Terms of Use
 

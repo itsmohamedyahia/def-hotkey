@@ -1,8 +1,9 @@
-pynput
-cloudscraper
-beautifulsoup4
-arabic-reshaper
-python-bidi
-pystray
-pillow
-pyinstaller
+pynput==1.8.1
+cloudscraper==1.2.71
+beautifulsoup4==4.14.3
+arabic-reshaper==3.0.0
+python-bidi==0.6.7
+pystray==0.19.5
+pillow==12.2.0
+pyinstaller==6.19.0
+requests==2.33.1

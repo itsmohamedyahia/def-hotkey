@@ -19,8 +19,31 @@ import requests
 import socket
 import os
 import json
+import logging
 
 APP_NAME = "def"
+
+
+def _setup_logging():
+    """Configure logging to file in the user's config directory."""
+    if sys.platform == "win32":
+        log_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
+    else:
+        log_dir = os.path.join(os.path.expanduser('~'), '.config', APP_NAME)
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, "def.log")
+    logging.basicConfig(
+        filename=log_path,
+        filemode='a',
+        level=logging.WARNING,
+        format='%(asctime)s [%(levelname)s] %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
+
+
+_setup_logging()
+log = logging.getLogger(APP_NAME)
+
 
 # --- Dark Theme Colors (Catppuccin Mocha) ---
 C = {
@@ -62,8 +85,8 @@ def add_to_startup():
             reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
             with reg_key:
                 winreg.SetValueEx(reg_key, APP_NAME, 0, winreg.REG_SZ, command)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to add to Windows startup: %s", e)
 
 
 def get_config_path():
@@ -75,6 +98,24 @@ def get_config_path():
     return os.path.join(config_dir, "settings.json")
 
 
+def _prompt_startup():
+    """Ask user once whether to add the app to Windows startup."""
+    try:
+        from tkinter import messagebox
+        root_tmp = tk.Tk()
+        root_tmp.withdraw()
+        answer = messagebox.askyesno(
+            APP_NAME,
+            "Would you like def to launch automatically on Windows startup?\n\n"
+            "You can change this later in Task Manager > Startup.",
+        )
+        root_tmp.destroy()
+        return answer
+    except Exception as e:
+        log.warning("Startup prompt failed: %s", e)
+        return False
+
+
 def setup_auto_start():
     config_path = get_config_path()
     config = {}
@@ -82,16 +123,24 @@ def setup_auto_start():
         try:
             with open(config_path, 'r') as f:
                 config = json.load(f)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to read config at %s: %s", config_path, e)
     if not config.get("startup_configured"):
-        try:
-            add_to_startup()
+        if _prompt_startup():
+            try:
+                add_to_startup()
+                config["startup_configured"] = True
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+            except Exception as e:
+                log.warning("Failed to configure auto-start: %s", e)
+        else:
             config["startup_configured"] = True
-            with open(config_path, 'w') as f:
-                json.dump(config, f, indent=4)
-        except Exception:
-            pass
+            try:
+                with open(config_path, 'w') as f:
+                    json.dump(config, f, indent=4)
+            except Exception as e:
+                log.warning("Failed to save startup preference: %s", e)
 
 
 def check_connectivity():
@@ -120,6 +169,7 @@ def get_word_data(word):
         )
         scraper.headers.update({'User-Agent': 'def-dictionary-cli/1.0 (Open Source Educational Tool)'})
     except Exception as e:
+        log.error("Cloudscraper init failed: %s", e)
         return {'network_error': True, 'error': f'Cloudscraper init error: {e}'}
 
     # 1. Free Dictionary API — extracts phonetics, synonyms, and additional structured meanings
@@ -150,8 +200,8 @@ def get_word_data(word):
             # Save API definition just in case Vocab.com fails
             if results['meanings'] and results['meanings'][0]['definitions']:
                 api_fallback_short_def = results['meanings'][0]['definitions'][0]['text']
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning("Dictionary API fetch failed for '%s': %s", word, e)
 
     # 2. Vocabulary.com — primary source for high-quality short/long definitions
     try:
@@ -165,6 +215,7 @@ def get_word_data(word):
             if long_tag:
                 results['long_def'] = " ".join(long_tag.stripped_strings)
     except Exception as e:
+        log.warning("Vocab.com fetch failed for '%s': %s", word, e)
         error_messages.append(f"Vocab.com: {e}")
 
     # Fallback: if Vocab.com had no short definition, use the API's definition
@@ -184,6 +235,7 @@ def get_word_data(word):
         results['ar_words'] = [el.get_text(strip=True) for el in ar_words_tags if el.get_text(strip=True)]
         results['eng_examples'] = [' '.join(el.stripped_strings) for el in eng_sents_tags if el.get_text(strip=True)]
     except Exception as e:
+        log.warning("Reverso Context fetch failed for '%s': %s", word, e)
         error_messages.append(f"Reverso Context: {e}")
 
     if error_messages and not (results['short_def'] or results['ar_words']):
@@ -232,8 +284,8 @@ class WordLookupApp:
                 self.history = cfg.get('history', [])
             else:
                 self.save_config()
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to load config from %s: %s", self.config_path, e)
 
     def save_config(self):
         try:
@@ -248,8 +300,8 @@ class WordLookupApp:
             })
             with open(self.config_path, 'w') as f:
                 json.dump(existing, f, indent=4)
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Failed to save config to %s: %s", self.config_path, e)
 
     def add_to_history(self, word):
         w = word.strip().lower()
@@ -288,8 +340,8 @@ class WordLookupApp:
                 u32.BringWindowToTop(hwnd)
                 u32.ShowWindow(hwnd, 5)
                 u32.SetForegroundWindow(hwnd)
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Focus steal failed: %s", e)
 
     def _show_window(self, window):
         window.attributes("-topmost", True)
@@ -551,6 +603,7 @@ class WordLookupApp:
         try:
             data = get_word_data(word)
         except Exception as e:
+            log.error("Unexpected lookup error for '%s': %s", word, e)
             self.root.after(0, lambda: self._show_error(f"Unexpected error: {e}"))
             return
         if isinstance(data, dict) and data.get('network_error'):
@@ -681,8 +734,8 @@ class WordLookupApp:
             self.root.clipboard_append(txt)
             self.copy_btn.config(text="\u2713 Copied!")
             self.result_window.after(1500, lambda: self.copy_btn.config(text="\U0001F4CB Copy All"))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Copy to clipboard failed: %s", e)
 
     def _copy_smart(self):
         """Copy word + Arabic translations + two Vocabulary.com definitions."""
@@ -704,8 +757,8 @@ class WordLookupApp:
             self.root.clipboard_append(text)
             self.smart_copy_btn.config(text="\u2713 Copied!")
             self.result_window.after(1500, lambda: self.smart_copy_btn.config(text="\U0001F4CB Copy"))
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning("Smart copy failed: %s", e)
 
     # --- Zoom ---
     def _zoom(self, event=None, d=0):
@@ -722,16 +775,16 @@ class WordLookupApp:
             draw = ImageDraw.Draw(img)
             draw.text((15, 10), "W", fill=(255, 255, 255),
                       font=ImageFont.truetype("arial.ttf", 40))
-        except Exception:
-            pass
+        except Exception as e:
+            log.debug("Tray icon fallback font failed: %s", e)
         for name in ["app.png", "tray_icon.png", "app.ico"]:
             try:
                 p = resource_path(name)
                 if os.path.exists(p):
                     img = Image.open(p)
                     break
-            except Exception:
-                pass
+            except Exception as e:
+                log.debug("Tray icon load failed for %s: %s", name, e)
         menu = pystray.Menu(
             pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window), default=True),
             pystray.MenuItem('Customize Shortcuts', lambda: self.root.after(0, self._open_shortcut_win)),
@@ -826,6 +879,7 @@ class WordLookupApp:
             self.hotkey_listener = keyboard.GlobalHotKeys(hotkeys)
             self.hotkey_listener.run()
         except Exception as e:
+            log.error("Failed to register hotkey '%s': %s", hotkey_string, e)
             self.root.after(0, lambda: self._show_error(
                 f"Failed to register hotkey '{hotkey_string}': {e}"))
 
