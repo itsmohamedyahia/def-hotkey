@@ -21,6 +21,14 @@ Instead of opening a browser, navigating to multiple cluttered websites, and typ
 - **Smart Copy (`Ctrl+C`):** Instantly copy a formatted summary of the word, its translations, and definitions straight to your clipboard—perfect for note-taking.
 - **Zero-Distraction UI:** A sleek, dark-themed (Catppuccin Mocha) interface that stays out of your way.
 
+## 📸 Evolution
+
+From a simple terminal-based lookup tool to a refined, hotkey-driven GUI:
+
+| **V1: Terminal (April 2025)** | **V2: Modern GUI that Spawns With a Hotkey (June 2026)** |
+|:---:|:---:|
+| ![Old Terminal Version](screenshots/old_terminal.png) | ![New GUI Version](screenshots/new_gui.png) |
+
 ## 🛠️ Build Instructions
 
 To build the executable yourself using PyInstaller, follow these steps:
