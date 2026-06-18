@@ -781,7 +781,8 @@ class WordLookupApp:
             try:
                 p = resource_path(name)
                 if os.path.exists(p):
-                    img = Image.open(p)
+                    img = Image.open(p).convert("RGBA")
+                    img = img.resize((64, 64), Image.Resampling.LANCZOS)
                     break
             except Exception as e:
                 log.debug("Tray icon load failed for %s: %s", name, e)
@@ -895,6 +896,11 @@ class WordLookupApp:
 def main():
     setup_auto_start()
     root = tk.Tk()
+    try:
+        icon_img = tk.PhotoImage(file=resource_path("app.png"))
+        root.iconphoto(True, icon_img)
+    except Exception as e:
+        log.warning("Could not set root icon: %s", e)
     app = WordLookupApp(root)
     app.restart_hotkey_listener(app.hotkey)
     app.create_tray_icon()
