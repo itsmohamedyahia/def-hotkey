@@ -20,6 +20,9 @@ import socket
 import os
 import json
 import logging
+import urllib.parse
+import re
+import ctypes
 
 APP_NAME = "def"
 
@@ -98,6 +101,48 @@ def get_config_path():
     return os.path.join(config_dir, "settings.json")
 
 
+def get_audio_cache_dir():
+    if sys.platform == "win32":
+        config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
+    else:
+        config_dir = os.path.join(os.path.expanduser('~'), '.config', APP_NAME)
+    audio_dir = os.path.join(config_dir, "audio_cache")
+    os.makedirs(audio_dir, exist_ok=True)
+    return audio_dir
+
+
+def sanitize_filename(name):
+    return re.sub(r'[^a-zA-Z0-9_\-]', '_', name)
+
+
+_mci_lock = threading.Lock()
+
+
+def play_audio_file(file_path):
+    def _play():
+        with _mci_lock:
+            try:
+                winmm = ctypes.windll.winmm
+                # Close any previous alias to avoid collision
+                winmm.mciSendStringW("close myaudio", None, 0, 0)
+                # Open the file
+                abs_path = os.path.abspath(file_path)
+                open_cmd = f'open "{abs_path}" type mpegvideo alias myaudio'
+                res = winmm.mciSendStringW(open_cmd, None, 0, 0)
+                if res != 0:
+                    # Fallback without type mpegvideo if that failed
+                    open_cmd = f'open "{abs_path}" alias myaudio'
+                    res = winmm.mciSendStringW(open_cmd, None, 0, 0)
+                
+                if res == 0:
+                    winmm.mciSendStringW("play myaudio", None, 0, 0)
+                else:
+                    log.error("MCI failed to open audio file: %s, code: %d", file_path, res)
+            except Exception as e:
+                log.error("MCI playback exception: %s", e)
+    threading.Thread(target=_play, daemon=True).start()
+
+
 def _prompt_startup():
     """Ask user once whether to add the app to Windows startup."""
     try:
@@ -159,6 +204,7 @@ def get_word_data(word):
         'short_def': None, 'long_def': None, 'ar_words': None,
         'eng_examples': None, 'error': None, 'phonetic': None,
         'meanings': [], 'audio_url': None,
+        'uk_audio_url': None, 'us_audio_url': None,
     }
     error_messages = []
     api_fallback_short_def = None
@@ -181,9 +227,16 @@ def get_word_data(word):
             data = api_resp.json()[0]
             results['phonetic'] = data.get('phonetic')
             for p in data.get('phonetics', []):
-                if p.get('audio'):
-                    results['audio_url'] = p['audio']
-                    break
+                audio = p.get('audio')
+                if audio:
+                    audio_lower = audio.lower()
+                    if '-uk' in audio_lower or '/uk/' in audio_lower or '-gb' in audio_lower or '/gb/' in audio_lower:
+                        results['uk_audio_url'] = audio
+                    elif '-us' in audio_lower or '/us/' in audio_lower:
+                        results['us_audio_url'] = audio
+                    
+                    if not results['audio_url']:
+                        results['audio_url'] = audio
             for m in data.get('meanings', []):
                 meaning = {
                     'pos': m.get('partOfSpeech', ''),
@@ -241,7 +294,12 @@ def get_word_data(word):
     if error_messages and not (results['short_def'] or results['ar_words']):
         results['error'] = "\n".join(error_messages)
 
-    has_data = any(v for k, v in results.items() if k not in ('error', 'audio_url', 'phonetic') and v)
+    if not results.get('uk_audio_url'):
+        results['uk_audio_url'] = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-GB&client=tw-ob&q={urllib.parse.quote(word)}"
+    if not results.get('us_audio_url'):
+        results['us_audio_url'] = f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-US&client=tw-ob&q={urllib.parse.quote(word)}"
+
+    has_data = any(v for k, v in results.items() if k not in ('error', 'audio_url', 'phonetic', 'uk_audio_url', 'us_audio_url') and v)
     return results if has_data else None
 
 
@@ -610,8 +668,14 @@ class WordLookupApp:
             self.root.after(0, lambda: self._show_error(data.get('error', 'Network error')))
             return
         if data is None:
-            self.root.after(0, lambda: self._show_error(f"No results found for '{word}'."))
-            return
+            # Fallback data structure for multi-word or dictionary-miss searches
+            data = {
+                'short_def': None, 'long_def': None, 'ar_words': None,
+                'eng_examples': None, 'error': None, 'phonetic': None,
+                'meanings': [], 'audio_url': None,
+                'uk_audio_url': f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-GB&client=tw-ob&q={urllib.parse.quote(word)}",
+                'us_audio_url': f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-US&client=tw-ob&q={urllib.parse.quote(word)}"
+            }
         self.cache[word.lower()] = data
         self.root.after(0, lambda: self._on_result(word, data))
 
@@ -646,6 +710,30 @@ class WordLookupApp:
         t.insert(tk.END, word, "title")
         if data.get('phonetic'):
             t.insert(tk.END, f"  {data['phonetic']}", "ipa")
+        
+        # Add UK and US sound buttons
+        t.insert(tk.END, "   ")
+        uk_btn = tk.Button(
+            t, text="🔊 UK",
+            font=("Segoe UI", 10, "bold"),
+            bg=C['surface'], fg=C['lavender'],
+            activebackground=C['overlay'], activeforeground=C['lavender'],
+            relief=tk.FLAT, bd=0, cursor="hand2", padx=6, pady=2,
+            command=lambda: self.play_pronunciation(word, 'uk', data.get('uk_audio_url'), uk_btn)
+        )
+        t.window_create(tk.END, window=uk_btn)
+        
+        t.insert(tk.END, "  ")
+        us_btn = tk.Button(
+            t, text="🔊 US",
+            font=("Segoe UI", 10, "bold"),
+            bg=C['surface'], fg=C['blue'],
+            activebackground=C['overlay'], activeforeground=C['blue'],
+            relief=tk.FLAT, bd=0, cursor="hand2", padx=6, pady=2,
+            command=lambda: self.play_pronunciation(word, 'us', data.get('us_audio_url'), us_btn)
+        )
+        t.window_create(tk.END, window=us_btn)
+        
         t.insert(tk.END, "\n")
         # Mark end of title line — underline search starts AFTER this
         title_end = t.index(tk.INSERT)
@@ -724,6 +812,38 @@ class WordLookupApp:
             end_pos = f"{pos}+{len(word)}c"
             t.tag_add("highlight", pos, end_pos)
             search_start = end_pos
+
+    def play_pronunciation(self, word, accent, url, button):
+        if not url:
+            lang = 'en-GB' if accent == 'uk' else 'en-US'
+            url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl={lang}&client=tw-ob&q={urllib.parse.quote(word)}"
+        
+        def perform():
+            old_text = button.cget("text")
+            button.config(text="⏳ " + accent.upper(), state=tk.DISABLED)
+            try:
+                cache_dir = get_audio_cache_dir()
+                ext = ".mp3"
+                if url.lower().endswith(".wav"):
+                    ext = ".wav"
+                cache_path = os.path.join(cache_dir, f"{sanitize_filename(word)}_{accent}{ext}")
+                
+                if not os.path.exists(cache_path):
+                    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+                    resp = requests.get(url, headers=headers, timeout=10)
+                    if resp.status_code == 200:
+                        with open(cache_path, "wb") as f:
+                            f.write(resp.content)
+                    else:
+                        raise Exception(f"HTTP status {resp.status_code}")
+                
+                play_audio_file(cache_path)
+            except Exception as e:
+                log.error("Failed to play pronunciation for %s (%s): %s", word, accent, e)
+            finally:
+                self.root.after(0, lambda: button.config(text=old_text, state=tk.NORMAL))
+                
+        threading.Thread(target=perform, daemon=True).start()
 
     # --- Copy ---
     def _copy(self):
