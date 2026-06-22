@@ -23,6 +23,7 @@ import logging
 import urllib.parse
 import re
 import ctypes
+import sqlite3
 
 APP_NAME = "def"
 
@@ -72,6 +73,134 @@ def resource_path(relative_path):
     except AttributeError:
         base_path = os.path.abspath(".")
     return os.path.join(base_path, relative_path)
+
+
+def get_db_path():
+    if sys.platform == "win32":
+        config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
+    else:
+        config_dir = os.path.join(os.path.expanduser('~'), '.config', APP_NAME)
+    os.makedirs(config_dir, exist_ok=True)
+    return os.path.join(config_dir, "cache.db")
+
+
+def init_db():
+    conn = sqlite3.connect(get_db_path())
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS word_cache (
+                word TEXT PRIMARY KEY,
+                data TEXT,
+                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to initialize database: %s", e)
+    finally:
+        conn.close()
+
+
+def save_word_to_db(word, data):
+    conn = sqlite3.connect(get_db_path())
+    try:
+        cursor = conn.cursor()
+        cursor.execute(
+            "INSERT OR REPLACE INTO word_cache (word, data) VALUES (?, ?)",
+            (word.lower(), json.dumps(data))
+        )
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to save word '%s' to database: %s", word, e)
+    finally:
+        conn.close()
+
+
+def get_word_from_db(word):
+    conn = sqlite3.connect(get_db_path())
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT data FROM word_cache WHERE word = ?", (word.lower(),))
+        row = cursor.fetchone()
+        if row:
+            return json.loads(row[0])
+    except Exception as e:
+        log.error("Failed to get word '%s' from database: %s", word, e)
+    finally:
+        conn.close()
+    return None
+
+
+def clear_text_cache():
+    conn = sqlite3.connect(get_db_path())
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM word_cache")
+        conn.commit()
+    except Exception as e:
+        log.error("Failed to clear text cache: %s", e)
+    finally:
+        conn.close()
+
+
+def get_text_cache_count():
+    conn = sqlite3.connect(get_db_path())
+    count = 0
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM word_cache")
+        count = cursor.fetchone()[0]
+    except Exception as e:
+        log.error("Failed to get text cache count: %s", e)
+    finally:
+        conn.close()
+    return count
+
+
+def close_audio_player():
+    try:
+        winmm = ctypes.windll.winmm
+        winmm.mciSendStringW("close myaudio", None, 0, 0)
+    except Exception as e:
+        log.debug("Failed to close audio alias: %s", e)
+
+
+def get_voice_cache_info():
+    audio_dir = get_audio_cache_dir()
+    total_size = 0
+    count = 0
+    try:
+        for f in os.listdir(audio_dir):
+            fp = os.path.join(audio_dir, f)
+            if os.path.isfile(fp):
+                total_size += os.path.getsize(fp)
+                count += 1
+    except Exception as e:
+        log.warning("Failed to calculate audio cache size: %s", e)
+    
+    if total_size >= 1024 * 1024:
+        size_str = f"{total_size / (1024 * 1024):.1f} MB"
+    else:
+        size_str = f"{total_size / 1024:.1f} KB"
+    return size_str, count
+
+
+def clear_voice_cache():
+    close_audio_player()
+    audio_dir = get_audio_cache_dir()
+    errors = 0
+    deleted = 0
+    for f in os.listdir(audio_dir):
+        fp = os.path.join(audio_dir, f)
+        if os.path.isfile(fp):
+            try:
+                os.remove(fp)
+                deleted += 1
+            except Exception as e:
+                log.warning("Could not delete audio cache file %s: %s", fp, e)
+                errors += 1
+    return deleted, errors
 
 
 # --- Startup Installer ---
@@ -546,6 +675,8 @@ class WordLookupApp:
             side=tk.LEFT, padx=(10, 5), pady=6)
         self.copy_btn = Button(bar, text="\U0001F4CB Copy All", command=self._copy, **bs)
         self.copy_btn.pack(side=tk.LEFT, padx=5, pady=6)
+        Button(bar, text="⚙ Settings", command=self._open_settings_win, **bs).pack(
+            side=tk.LEFT, padx=5, pady=6)
 
         # Credits Label
         credits_lbl = Label(bar, text="Data: Vocabulary.com & Reverso", font=("Segoe UI", 8),
@@ -651,9 +782,15 @@ class WordLookupApp:
         self.input_window.after(350, lambda: self._animate(word, n + 1))
 
     def _run_lookup(self, word):
-        cached = self.cache.get(word.lower())
+        word_lower = word.lower()
+        cached = self.cache.get(word_lower)
         if cached is not None:
             self.root.after(0, lambda: self._on_result(word, cached))
+            return
+        db_cached = get_word_from_db(word_lower)
+        if db_cached is not None:
+            self.cache[word_lower] = db_cached
+            self.root.after(0, lambda: self._on_result(word, db_cached))
             return
         if not check_connectivity():
             self.root.after(0, lambda: self._show_error("No internet connection."))
@@ -676,7 +813,8 @@ class WordLookupApp:
                 'uk_audio_url': f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-GB&client=tw-ob&q={urllib.parse.quote(word)}",
                 'us_audio_url': f"https://translate.google.com/translate_tts?ie=UTF-8&tl=en-US&client=tw-ob&q={urllib.parse.quote(word)}"
             }
-        self.cache[word.lower()] = data
+        save_word_to_db(word_lower, data)
+        self.cache[word_lower] = data
         self.root.after(0, lambda: self._on_result(word, data))
 
     def _on_result(self, word, data):
@@ -908,41 +1046,58 @@ class WordLookupApp:
                 log.debug("Tray icon load failed for %s: %s", name, e)
         menu = pystray.Menu(
             pystray.MenuItem('Show', lambda: self.root.after(0, self.show_input_window), default=True),
-            pystray.MenuItem('Customize Shortcuts', lambda: self.root.after(0, self._open_shortcut_win)),
+            pystray.MenuItem('Settings', lambda: self.root.after(0, self._open_settings_win)),
             pystray.MenuItem('Exit', self._tray_exit),
         )
         self.tray_icon = pystray.Icon(APP_NAME, img, APP_NAME, menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     # --- Shortcut customization ---
-    def _open_shortcut_win(self):
+    def _open_settings_win(self):
+        if hasattr(self, 'settings_win') and self.settings_win.winfo_exists():
+            self._show_window(self.settings_win)
+            return
+
         win = Toplevel(self.root)
-        win.title("Customize Shortcuts")
+        win.title("Settings")
         win.configure(bg=C['bg'])
         win.resizable(False, False)
-        self._center(win, 420, 320)
+        self._center(win, 480, 520)
+        self.settings_win = win
 
-        ls = dict(font=("Segoe UI", 12), bg=C['bg'], fg=C['text'])
+        # Header
+        Label(win, text="Settings", font=("Segoe UI", 18, "bold"), bg=C['bg'], fg=C['blue']).pack(pady=(15, 10))
+
+        # --- SECTION 1: Shortcuts ---
+        sf = tk.Frame(win, bg=C['surface'], bd=1, relief=tk.FLAT)
+        sf.pack(fill=tk.X, padx=20, pady=10)
+
+        lbl_sec1 = Label(sf, text="Shortcuts Configuration", font=("Segoe UI", 12, "bold"), bg=C['surface'], fg=C['blue'])
+        lbl_sec1.pack(anchor="w", padx=15, pady=(10, 5))
+
+        ls = dict(font=("Segoe UI", 10), bg=C['surface'], fg=C['subtext'])
         es = dict(
-            font=("Segoe UI", 13), justify='center',
-            bg=C['surface'], fg=C['text'], insertbackground=C['text'],
+            font=("Segoe UI", 11), justify='center',
+            bg=C['overlay'], fg=C['text'], insertbackground=C['text'],
             selectbackground=C['blue'], selectforeground=C['bg'],
-            relief=tk.FLAT, bd=6,
+            relief=tk.FLAT, bd=4,
         )
 
-        Label(win, text="Search Hotkey", font=("Segoe UI", 14, "bold"),
-              bg=C['bg'], fg=C['blue']).pack(pady=(15, 2))
-        Label(win, text=f"Current: {self.hotkey}", **ls).pack()
+        # Row 1: Search Hotkey
+        r1 = tk.Frame(sf, bg=C['surface'])
+        r1.pack(fill=tk.X, padx=15, pady=5)
+        Label(r1, text="Search Window:", **ls).pack(side=tk.LEFT)
         v1 = tk.StringVar(value=self.hotkey)
-        e1 = Entry(win, textvariable=v1, width=28, **es)
-        e1.pack(pady=5, padx=20)
+        e1 = Entry(r1, textvariable=v1, width=20, **es)
+        e1.pack(side=tk.RIGHT)
 
-        Label(win, text="Clipboard Lookup Hotkey", font=("Segoe UI", 14, "bold"),
-              bg=C['bg'], fg=C['blue']).pack(pady=(15, 2))
-        Label(win, text=f"Current: {self.clip_hotkey}", **ls).pack()
+        # Row 2: Clipboard Hotkey
+        r2 = tk.Frame(sf, bg=C['surface'])
+        r2.pack(fill=tk.X, padx=15, pady=5)
+        Label(r2, text="Clipboard Lookup:", **ls).pack(side=tk.LEFT)
         v2 = tk.StringVar(value=self.clip_hotkey)
-        e2 = Entry(win, textvariable=v2, width=28, **es)
-        e2.pack(pady=5, padx=20)
+        e2 = Entry(r2, textvariable=v2, width=20, **es)
+        e2.pack(side=tk.RIGHT)
 
         def on_key(var):
             def handler(e):
@@ -959,19 +1114,88 @@ class WordLookupApp:
         e1.bind("<KeyPress>", on_key(v1))
         e2.bind("<KeyPress>", on_key(v2))
 
-        def save():
+        # Save button for shortcuts
+        def save_shortcuts():
             if '+' in v1.get() and '+' in v2.get():
                 self.clip_hotkey = v2.get()
                 self.restart_hotkey_listener(v1.get())
-                win.destroy()
-
-        Button(
-            win, text="Save", font=("Segoe UI", 12, "bold"),
+                btn_save_shortcuts.config(text="Saved!", fg=C['green'])
+                win.after(1500, lambda: btn_save_shortcuts.config(text="Save Shortcuts", fg=C['bg']))
+        
+        btn_save_shortcuts = Button(
+            sf, text="Save Shortcuts", font=("Segoe UI", 10, "bold"),
             bg=C['blue'], fg=C['bg'], activebackground=C['lavender'],
             activeforeground=C['bg'], relief=tk.FLAT, bd=0,
-            padx=20, pady=6, cursor="hand2", command=save,
-        ).pack(pady=15)
+            padx=15, pady=4, cursor="hand2", command=save_shortcuts
+        )
+        btn_save_shortcuts.pack(anchor="e", padx=15, pady=(5, 10))
 
+        # --- SECTION 2: Cache Management ---
+        cf = tk.Frame(win, bg=C['surface'], bd=1, relief=tk.FLAT)
+        cf.pack(fill=tk.X, padx=20, pady=10)
+
+        lbl_sec2 = Label(cf, text="Cache Management", font=("Segoe UI", 12, "bold"), bg=C['surface'], fg=C['blue'])
+        lbl_sec2.pack(anchor="w", padx=15, pady=(10, 5))
+
+        # Row 1: Text Cache
+        r3 = tk.Frame(cf, bg=C['surface'])
+        r3.pack(fill=tk.X, padx=15, pady=5)
+        
+        lbl_text_cache = Label(r3, text="Text Cache: Loading...", **ls)
+        lbl_text_cache.pack(side=tk.LEFT)
+        
+        def do_clear_text():
+            clear_text_cache()
+            self.cache.clear() # clear in-memory cache too
+            update_cache_labels()
+            
+        btn_clear_text = Button(
+            r3, text="Clear Textual Data", font=("Segoe UI", 9, "bold"),
+            bg=C['surface'], fg=C['red'], activebackground=C['overlay'],
+            activeforeground=C['red'], relief=tk.FLAT, bd=0,
+            padx=10, pady=3, cursor="hand2", command=do_clear_text
+        )
+        btn_clear_text.pack(side=tk.RIGHT)
+
+        # Row 2: Voice Cache
+        r4 = tk.Frame(cf, bg=C['surface'])
+        r4.pack(fill=tk.X, padx=15, pady=5)
+        
+        lbl_voice_cache = Label(r4, text="Voice Cache: Loading...", **ls)
+        lbl_voice_cache.pack(side=tk.LEFT)
+        
+        def do_clear_voice():
+            clear_voice_cache()
+            update_cache_labels()
+
+        btn_clear_voice = Button(
+            r4, text="Clear Voice Data", font=("Segoe UI", 9, "bold"),
+            bg=C['surface'], fg=C['red'], activebackground=C['overlay'],
+            activeforeground=C['red'], relief=tk.FLAT, bd=0,
+            padx=10, pady=3, cursor="hand2", command=do_clear_voice
+        )
+        btn_clear_voice.pack(side=tk.RIGHT)
+
+        def update_cache_labels():
+            word_count = get_text_cache_count()
+            lbl_text_cache.config(text=f"Text Cache: {word_count} word(s) cached")
+            
+            size_str, file_count = get_voice_cache_info()
+            lbl_voice_cache.config(text=f"Voice Cache: {size_str} ({file_count} file(s))")
+
+        # Initial call to populate labels
+        update_cache_labels()
+
+        # Close Button at the bottom of the window
+        btn_close = Button(
+            win, text="Close", font=("Segoe UI", 11, "bold"),
+            bg=C['overlay'], fg=C['text'], activebackground=C['surface'],
+            activeforeground=C['text'], relief=tk.FLAT, bd=0,
+            padx=20, pady=6, cursor="hand2", command=win.destroy
+        )
+        btn_close.pack(pady=15)
+
+        win.bind("<Escape>", lambda e: win.destroy())
         self._show_window(win)
         e1.focus_set()
 
@@ -1015,6 +1239,7 @@ class WordLookupApp:
 
 def main():
     setup_auto_start()
+    init_db()
     root = tk.Tk()
     try:
         icon_img = tk.PhotoImage(file=resource_path("app.png"))
