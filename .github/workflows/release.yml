@@ -1,0 +1,56 @@
+name: Build and Release Windows Executables
+
+on:
+  release:
+    types: [published]
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build & Upload Release Assets
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build executable with PyInstaller
+        run: |
+          pyinstaller --clean def.spec
+
+      - name: Build Inno Setup Installer
+        run: |
+          if (Get-Command "iscc" -ErrorAction SilentlyContinue) {
+              iscc installer.iss
+          } elseif (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe") {
+              & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+          } else {
+              Write-Error "Inno Setup (ISCC.exe) could not be found."
+              exit 1
+          }
+
+      - name: Upload binaries to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/def.exe
+            dist/def-installer.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
