@@ -221,6 +221,38 @@ def add_to_startup():
             log.warning("Failed to add to Windows startup: %s", e)
 
 
+def is_in_startup():
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            try:
+                reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_READ)
+                with reg_key:
+                    winreg.QueryValueEx(reg_key, APP_NAME)
+                    return True
+            except FileNotFoundError:
+                return False
+        except Exception as e:
+            log.warning("Failed to check Windows startup registry: %s", e)
+    return False
+
+
+def remove_from_startup():
+    if sys.platform == "win32":
+        try:
+            import winreg
+            key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+            try:
+                reg_key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, key_path, 0, winreg.KEY_SET_VALUE)
+                with reg_key:
+                    winreg.DeleteValue(reg_key, APP_NAME)
+            except FileNotFoundError:
+                pass
+        except Exception as e:
+            log.warning("Failed to remove from Windows startup: %s", e)
+
+
 def get_config_path():
     if sys.platform == "win32":
         config_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), APP_NAME)
@@ -272,24 +304,6 @@ def play_audio_file(file_path):
     threading.Thread(target=_play, daemon=True).start()
 
 
-def _prompt_startup():
-    """Ask user once whether to add the app to Windows startup."""
-    try:
-        from tkinter import messagebox
-        root_tmp = tk.Tk()
-        root_tmp.withdraw()
-        answer = messagebox.askyesno(
-            APP_NAME,
-            "Would you like def to launch automatically on Windows startup?\n\n"
-            "You can change this later in Task Manager > Startup.",
-        )
-        root_tmp.destroy()
-        return answer
-    except Exception as e:
-        log.warning("Startup prompt failed: %s", e)
-        return False
-
-
 def setup_auto_start():
     config_path = get_config_path()
     config = {}
@@ -300,21 +314,13 @@ def setup_auto_start():
         except Exception as e:
             log.warning("Failed to read config at %s: %s", config_path, e)
     if not config.get("startup_configured"):
-        if _prompt_startup():
-            try:
-                add_to_startup()
-                config["startup_configured"] = True
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-            except Exception as e:
-                log.warning("Failed to configure auto-start: %s", e)
-        else:
+        try:
+            add_to_startup()
             config["startup_configured"] = True
-            try:
-                with open(config_path, 'w') as f:
-                    json.dump(config, f, indent=4)
-            except Exception as e:
-                log.warning("Failed to save startup preference: %s", e)
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=4)
+        except Exception as e:
+            log.warning("Failed to configure auto-start: %s", e)
 
 
 def check_connectivity():
@@ -1062,7 +1068,7 @@ class WordLookupApp:
         win.title("Settings")
         win.configure(bg=C['bg'])
         win.resizable(False, False)
-        self._center(win, 480, 520)
+        self._center(win, 480, 580)
         self.settings_win = win
 
         # Header
@@ -1186,6 +1192,30 @@ class WordLookupApp:
         # Initial call to populate labels
         update_cache_labels()
 
+        # --- SECTION 3: General Settings ---
+        gf = tk.Frame(win, bg=C['surface'], bd=1, relief=tk.FLAT)
+        gf.pack(fill=tk.X, padx=20, pady=10)
+
+        lbl_sec3 = Label(gf, text="General Settings", font=("Segoe UI", 12, "bold"), bg=C['surface'], fg=C['blue'])
+        lbl_sec3.pack(anchor="w", padx=15, pady=(10, 5))
+
+        startup_var = tk.BooleanVar(value=is_in_startup())
+
+        def on_startup_toggle():
+            if startup_var.get():
+                add_to_startup()
+            else:
+                remove_from_startup()
+
+        cb_startup = tk.Checkbutton(
+            gf, text="Run with Windows startup", variable=startup_var,
+            font=("Segoe UI", 10), bg=C['surface'], fg=C['text'],
+            selectcolor=C['surface'], activebackground=C['surface'],
+            activeforeground=C['text'], relief=tk.FLAT, bd=0,
+            command=on_startup_toggle
+        )
+        cb_startup.pack(anchor="w", padx=15, pady=(5, 10))
+
         # Close Button at the bottom of the window
         btn_close = Button(
             win, text="Close", font=("Segoe UI", 11, "bold"),
@@ -1237,7 +1267,25 @@ class WordLookupApp:
                          daemon=True).start()
 
 
+# Keep a reference to the mutex so it isn't garbage collected
+_app_mutex = None
+
+
 def main():
+    global _app_mutex
+    if sys.platform == "win32":
+        try:
+            # Create a named mutex to ensure single instance
+            # and let the installer detect if the app is running
+            kernel32 = ctypes.windll.kernel32
+            mutex_name = "def_dictionary_mutex"
+            _app_mutex = kernel32.CreateMutexW(None, True, mutex_name)
+            if kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+                # Already running, exit silently
+                sys.exit(0)
+        except Exception as e:
+            log.warning("Single instance check failed: %s", e)
+
     setup_auto_start()
     init_db()
     root = tk.Tk()
