@@ -42,10 +42,10 @@ These core system behaviors must not be modified or broken under any circumstanc
 
 ## ⚡ Core Features Specification
 
-### 1. Global Hotkey Activation (`Ctrl+Alt+W`)
+### 1. Global Hotkey Activation (`Ctrl+Alt+Z`)
 * **What it is:** A global shortcut that brings up the search input window from anywhere in the OS.
 * **Happy Path:**
-  1. Hitting `Ctrl+Alt+W` opens the search window.
+  1. Hitting `Ctrl+Alt+Z` opens the search window.
   2. The input field is empty, focused, and ready for typing.
   3. Search history is visible underneath the entry box (up to 10 entries).
   4. Hitting `Escape` closes/hides the search window immediately.

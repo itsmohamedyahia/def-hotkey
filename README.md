@@ -14,7 +14,7 @@ Instead of opening a browser, navigating to multiple cluttered websites, and typ
 
 ## ✨ Key Features
 
-- **Global Hotkey (`Ctrl+Alt+W`):** Instantly bring up the search window from any application.
+- **Global Hotkey (`Ctrl+Alt+Z`):** Instantly bring up the search window from any application.
 - **Clipboard Lookup (`Ctrl+Alt+D`):** Highlight a word, hit the shortcut, and promptly see the definition.
 - **Top-Tier Definitions:** Retrieves high-quality, comprehensive English definitions and explanations from [Vocabulary.com](https://www.vocabulary.com/).
 - **Accurate Translations & Examples:** Fetches Arabic translations and real-world usage examples from [Reverso Context](https://context.reverso.net/).

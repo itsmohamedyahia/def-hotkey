@@ -1,5 +1,5 @@
 """
-Word Lookup App — show input window with Ctrl+Alt+W.
+Word Lookup App — show input window with Ctrl+Alt+Z.
 Clipboard lookup with Ctrl+Alt+D.
 Dark-themed, feature-rich dictionary with search history and caching.
 """
@@ -449,7 +449,7 @@ class WordLookupApp:
         self.app_font = tkfont.Font(family="Segoe UI", size=self.base_font_size)
 
         self.config_path = get_config_path()
-        self.default_hotkey = '<ctrl>+<alt>+w'
+        self.default_hotkey = '<ctrl>+<alt>+z'
         self.default_clip_hotkey = '<ctrl>+<alt>+d'
         self.hotkey = self.default_hotkey
         self.clip_hotkey = self.default_clip_hotkey
